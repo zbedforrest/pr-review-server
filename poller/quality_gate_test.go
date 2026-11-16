@@ -129,3 +129,21 @@ func TestGateSkipsOffDashboardOnlyAndOverBudgetReviews(t *testing.T) {
 		t.Fatalf("over budget: %+v", rep)
 	}
 }
+
+func TestGatePriorsMarksLedgerRowsPostedAndLabelsSettledPoints(t *testing.T) {
+	priors := []service.PriorFinding{
+		{ID: "a.go:1:abc", State: "contested", File: "a.go", LineFrom: 10, LineTo: 19, Headline: "Old rows win", Verdicts: []string{"author: intentional"}},
+		{ID: "b.go:0:def", SettledOnPR: 41, File: "b.go", Headline: "Cache key ignores locale", Reason: "won't fix"},
+	}
+	got, posted := gatePriors(priors)
+
+	if !posted["a.go:1:abc"] || posted["b.go:0:def"] {
+		t.Fatalf("posted = %v, want only the ledger row", posted)
+	}
+	if got[0].Lines != "10-19" || got[0].State != "contested" {
+		t.Fatalf("ledger prior = %+v", got[0])
+	}
+	if got[1].State != "settled on #41" || got[1].Lines != "" || len(got[1].Verdicts) != 1 || got[1].Verdicts[0] != "author: won't fix" {
+		t.Fatalf("settled prior = %+v", got[1])
+	}
+}

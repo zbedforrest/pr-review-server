@@ -71,7 +71,7 @@ func TestByPRGroupsByHeadInFirstSeenOrder(t *testing.T) {
 
 func TestPromptFillsPlaceholdersAndTruncatesTheBody(t *testing.T) {
 	body := strings.Repeat("x", maxBodyChars+50)
-	p, err := Prompt("Fix login", body, "headsha", "basesha", "/tmp/base", items("c1"))
+	p, err := Prompt("Fix login", body, "headsha", "basesha", "/tmp/base", items("c1"), nil)
 	require.NoError(t, err)
 	for _, want := range []string{"Fix login", "headsha", "basesha", "/tmp/base", `"id": "c1"`, "[truncated]"} {
 		assert.Contains(t, p, want)
@@ -80,9 +80,24 @@ func TestPromptFillsPlaceholdersAndTruncatesTheBody(t *testing.T) {
 	assert.NotContains(t, p, strings.Repeat("x", maxBodyChars+1))
 }
 
+func TestPromptListsPriorPointsOrSaysNone(t *testing.T) {
+	p, err := Prompt("t", "b", "h", "b", "d", items("c1"), nil)
+	require.NoError(t, err)
+	assert.Contains(t, p, "settled on earlier PRs, with what was said since (JSON). A verdict such as \"author: intentional\" or \"won't fix\" settles that point for this PR:\nNone.")
+
+	prior := []Prior{{State: "contested", File: "a.go", Lines: "10-19", Headline: "Old rows win the ordering", Verdicts: []string{"author: intentional"}}}
+	posted := []Item{{ID: "c1", Kind: KindInline, Comment: "x", AlreadyPosted: true}}
+	p, err = Prompt("t", "b", "h", "b", "d", posted, prior)
+	require.NoError(t, err)
+	for _, want := range []string{`"headline": "Old rows win the ordering"`, `"author: intentional"`, `"lines": "10-19"`, `"already_posted": true`} {
+		assert.Contains(t, p, want)
+	}
+	assert.NotContains(t, p, "{{")
+}
+
 func TestPromptTruncatesTheBodyOnACharacterBoundary(t *testing.T) {
 	body := strings.Repeat("é", maxBodyChars+1)
-	p, err := Prompt("t", body, "h", "b", "d", items("c1"))
+	p, err := Prompt("t", body, "h", "b", "d", items("c1"), nil)
 	require.NoError(t, err)
 	assert.Contains(t, p, strings.Repeat("é", maxBodyChars)+"\n[truncated]")
 	assert.True(t, utf8.ValidString(p))
@@ -134,7 +149,7 @@ func TestRedactSecretsMasksCredentialValues(t *testing.T) {
 }
 
 func TestPromptListsTheCategoriesAndTheSecurityException(t *testing.T) {
-	p, err := Prompt("t", "b", "h", "b", "d", items("c1"))
+	p, err := Prompt("t", "b", "h", "b", "d", items("c1"), nil)
 	require.NoError(t, err)
 	assert.Contains(t, p, `"deliberate-choice"`)
 	assert.Contains(t, p, `"overstated-severity"`)

@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"pr-review-server/pkg/grader"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -89,6 +91,7 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 	if !p.reviewPublishBound(job) {
 		return skip("not_publish_bound")
 	}
+	prior, posted := gatePriors(p.priorFindingsFor(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.Author))
 	var items []grader.Item
 	var index []int
 	for i, c := range review.Comments {
@@ -99,7 +102,8 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		if !strings.EqualFold(strings.TrimSpace(c.Importance), "LOW") {
 			kind = grader.KindInline
 		}
-		items = append(items, grader.Item{ID: "F" + strconv.Itoa(len(items)+1), Kind: kind, File: c.FilePath, Line: c.LineNumber, Severity: strings.ToLower(c.Importance), Comment: c.CommentBody})
+		items = append(items, grader.Item{ID: "F" + strconv.Itoa(len(items)+1), Kind: kind, File: c.FilePath, Line: c.LineNumber, Severity: strings.ToLower(c.Importance), Comment: c.CommentBody,
+			AlreadyPosted: posted[payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)]})
 		index = append(index, i)
 	}
 	if len(items) == 0 {
@@ -110,7 +114,7 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		return skip("over_budget")
 	}
 	in := service.GradeAgentInput{Owner: job.PR.Owner, Repo: job.PR.Repo, PRNumber: job.PR.Number, DefaultBranch: result.BaseRef,
-		HeadSHA: job.PR.CommitSHA, Title: result.PRTitle, Body: result.PRBody, Items: items}
+		HeadSHA: job.PR.CommitSHA, Title: result.PRTitle, Body: result.PRBody, Items: items, Prior: prior}
 	if review.Scope != nil {
 		in.BaseSHA = review.Scope.MergeBase
 	}
@@ -203,6 +207,31 @@ func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.
 		rep.Status = "recorded"
 	}
 	logGate(in, *rep, logged)
+}
+
+// gatePriors turns the "already raised" block into the grader's earlier
+// points, and returns the fingerprints already on the ledger so an item that
+// is one of them is not graded a duplicate of itself.
+func gatePriors(priors []service.PriorFinding) ([]grader.Prior, map[string]bool) {
+	out := make([]grader.Prior, 0, len(priors))
+	posted := make(map[string]bool, len(priors))
+	for _, pf := range priors {
+		if pf.SettledOnPR == 0 {
+			posted[pf.ID] = true
+		}
+		g := grader.Prior{State: pf.State, File: pf.File, Headline: pf.Headline, Verdicts: pf.Verdicts}
+		if pf.LineFrom > 0 {
+			g.Lines = fmt.Sprintf("%d-%d", pf.LineFrom, pf.LineTo)
+		}
+		if pf.SettledOnPR != 0 {
+			g.State = fmt.Sprintf("settled on #%d", pf.SettledOnPR)
+			if pf.Reason != "" {
+				g.Verdicts = append(g.Verdicts, "author: "+pf.Reason)
+			}
+		}
+		out = append(out, g)
+	}
+	return out, posted
 }
 
 func gateHeadline(body string) string {
