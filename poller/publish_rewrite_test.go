@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 	"pr-review-server/pkg/rewrite"
@@ -123,5 +124,19 @@ func TestRewriteSkipsOverBudgetAndLegacyTitles(t *testing.T) {
 	f.p.cfg.PublishLegacyTitles = true
 	if rep := f.run(); rep.Skip != "legacy_titles" || f.calls.Load() != 0 {
 		t.Fatalf("report = %+v calls %d", rep, f.calls.Load())
+	}
+}
+
+func TestRewriteIncludesLowsTheGateEndorsesForInlineOnlyWithTheSwitch(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		if on {
+			t.Setenv(publisher.GateEndorsedInlineEnv, "true")
+		}
+		f := newRewriteFixture(t, gateModeOn, nil)
+		f.review.Comments[1].Verification = &types.Verification{Status: types.VerifySkipped, Gate: "GOOD", GateApplied: true}
+		rep := f.run()
+		if lowRewritten := f.review.Comments[1].Display != nil; lowRewritten != on || rep.Items != map[bool]int{false: 1, true: 2}[on] {
+			t.Errorf("switch %v: report %+v, LOW rewritten %v", on, rep, lowRewritten)
+		}
 	}
 }

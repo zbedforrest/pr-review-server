@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 	"pr-review-server/pkg/rewrite"
@@ -63,9 +64,9 @@ func (p *Poller) rewriteTimeoutAllowance() time.Duration {
 }
 
 // rewriteReview rewrites every finding the Lite ensemble (or its fallback)
-// is about to post inline (MEDIUM and CRITICAL, not held by the verifier or
-// the gate); findings merged in after this stage keep the default form
-// into a short title and a direct body. On mode sets the finding's Display;
+// is about to post inline (MEDIUM and CRITICAL, and LOWs the gate endorses
+// for inline, none held by the verifier or the gate) into a short title and
+// a direct body; findings merged in after this stage keep the default form. On mode sets the finding's Display;
 // shadow mode only logs. Any failure leaves the review as it was, and every
 // outcome logs a [REWRITE] line.
 func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, base service.AgentConfig, review *service.AgentReview) *RewriteReport {
@@ -89,7 +90,7 @@ func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, 
 	var index []int
 	for i, c := range review.Comments {
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" || c.Inactive || c.Verification.Suppresses() ||
-			strings.EqualFold(strings.TrimSpace(c.Importance), "LOW") {
+			strings.EqualFold(strings.TrimSpace(c.Importance), "LOW") && !publisher.GateEndorsesInline(c.Verification) {
 			continue
 		}
 		in.Items = append(in.Items, rewriteInputItem("F"+strconv.Itoa(len(in.Items)+1), c))
