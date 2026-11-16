@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // RenderHygieneEnv is the kill switch for the rendering hygiene of the
@@ -52,12 +53,17 @@ func InlineOperationalRiskEnabled() bool {
 const GateEndorsedInlineEnv = "PUBLISH_GATE_GOOD_INLINE"
 
 func gateEndorsed(f payload.Finding) bool {
+	return GateEndorsesInline(f.Verification)
+}
+
+// GateEndorsesInline reports whether a finding with this verification posts
+// inline on its GOOD grade from the applied gate (GateEndorsedInlineEnv).
+func GateEndorsesInline(v *types.Verification) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(GateEndorsedInlineEnv))) {
 	case "true", "1", "on", "yes":
 	default:
 		return false
 	}
-	v := f.Verification
 	return v != nil && v.GateApplied && v.Gate == "GOOD"
 }
 
