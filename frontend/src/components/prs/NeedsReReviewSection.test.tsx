@@ -82,7 +82,7 @@ describe('NeedsReReviewSection', () => {
     const heading = screen.getByRole('heading', { level: 2, name: 'Needs your re-review (2)' });
     expect(within(heading).queryByRole('button')).toBeNull();
     expect(
-      screen.getByText('You requested changes. These PRs now have a different head commit.')
+      screen.getByText('You requested changes, or your review was dismissed, and these PRs now have a different head commit.')
     ).toBeTruthy();
     expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByText('Second')).toBeTruthy();

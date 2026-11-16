@@ -204,8 +204,32 @@ func TestAttentionByUser(t *testing.T) {
 			want:    map[string]bool{"alice": false},
 		},
 		{
-			name:    "changes requested then dismissed",
+			name:    "changes requested then dismissed on an older commit",
 			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "DISMISSED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": true},
+		},
+		{
+			name:    "approval dismissed by a push",
+			reviews: []ReviewNode{review("alice", "DISMISSED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": true},
+		},
+		{
+			name:    "dismissed approval followed by a review of the new head",
+			reviews: []ReviewNode{review("alice", "DISMISSED", "A"), review("alice", "COMMENTED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "dismissed on the current head",
+			reviews: []ReviewNode{review("alice", "DISMISSED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "approved again after a dismissal",
+			reviews: []ReviewNode{review("alice", "DISMISSED", "A"), review("alice", "APPROVED", "A")},
 			head:    "B",
 			want:    map[string]bool{"alice": false},
 		},
@@ -299,11 +323,11 @@ func TestAttentionByUser(t *testing.T) {
 			want:    map[string]bool{"alice": false},
 		},
 		{
-			name:      "truncated history with a dismissal in the window clears",
+			name:      "truncated history with a dismissal on an older commit flags",
 			reviews:   []ReviewNode{review("alice", "DISMISSED", "A")},
 			head:      "B",
 			truncated: true,
-			want:      map[string]bool{"alice": false},
+			want:      map[string]bool{"alice": true},
 		},
 	}
 

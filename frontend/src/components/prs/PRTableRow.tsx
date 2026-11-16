@@ -11,6 +11,7 @@ import { useSettings } from '@/hooks/useSettings';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { ConfidenceBadge } from './ConfidenceBadge';
+import { ConflictIndicator } from './ConflictIndicator';
 import { GenerateSplitButton } from './GenerateSplitButton';
 import { MergeReadyIndicator } from './MergeReadyIndicator';
 import { NotesCell } from './NotesCell';
@@ -178,6 +179,7 @@ export const PRTableRow = memo(function PRTableRow({
       </td>
       <td className="pr-table__ci-status">
         <CIStatusIndicator state={pr.ci_state} failedChecks={pr.ci_failed_checks} prState={pr.pr_state} />
+        <ConflictIndicator pr={pr} />
       </td>
       <td className={`pr-table__approval-count ${pr.approval_count > 0 ? 'pr-table__approval-count--positive' : 'pr-table__approval-count--zero'}`}>
         {pr.approval_count}
