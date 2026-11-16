@@ -37,4 +37,4 @@ Category: for BAD use exactly one of {{BAD_CATEGORIES}}; for OK use one of {{OK_
 
 Never quote a secret, password, token or key value in a reason; name the file and line instead.
 
-Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": ..., "reason": one or two sentences with concrete file:line evidence}. Grade every id.
+Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": ..., "reason": one or two sentences with concrete file:line evidence}. For a "duplicate", also give "duplicate_of": the id of the item it repeats, or "prior" for an earlier point; of two items that repeat each other, mark only one. Grade every id.

@@ -169,7 +169,7 @@ func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.
 		return
 	}
 	byID := make(map[string]grader.Grade, len(res.Grades))
-	for _, g := range res.Grades {
+	for _, g := range grader.ResolveDuplicates(in.Items, res.Grades) {
 		byID[g.ID] = g
 	}
 	var logged []gateItem

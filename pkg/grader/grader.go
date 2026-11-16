@@ -56,6 +56,55 @@ type Grade struct {
 	Grade    string `json:"grade"`
 	Category string `json:"category"`
 	Reason   string `json:"reason"`
+	// DuplicateOf names what a "duplicate" repeats: another item's id, or
+	// DuplicateOfPrior for a point raised in an earlier round.
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+}
+
+// DuplicateOfPrior marks a duplicate of a point already raised on the PR.
+const DuplicateOfPrior = "prior"
+
+// ResolveDuplicates keeps one item of every group of duplicates: taking
+// items from the highest severity down, a BAD "duplicate" stays BAD only
+// when what it repeats is an earlier point or an item still kept, and is
+// otherwise kept as OK, so two items naming each other never both drop.
+func ResolveDuplicates(items []Item, grades []Grade) []Grade {
+	byID := make(map[string]int, len(grades))
+	for i, g := range grades {
+		byID[g.ID] = i
+	}
+	order := make([]Item, len(items))
+	copy(order, items)
+	sort.SliceStable(order, func(i, j int) bool { return severityRank(order[i].Severity) > severityRank(order[j].Severity) })
+	out := append([]Grade(nil), grades...)
+	for _, it := range order {
+		i, ok := byID[it.ID]
+		if !ok || out[i].Grade != GradeBad || out[i].Category != "duplicate" {
+			continue
+		}
+		target := strings.TrimSpace(out[i].DuplicateOf)
+		if strings.EqualFold(target, DuplicateOfPrior) {
+			continue
+		}
+		if j, ok := byID[target]; ok && target != it.ID && out[j].Grade != GradeBad {
+			continue
+		}
+		out[i].Grade, out[i].Category = GradeOK, "marginal-value"
+		out[i].Reason += " (kept: the item it repeats is not kept)"
+	}
+	return out
+}
+
+func severityRank(s string) int {
+	switch strings.ToLower(s) {
+	case "critical":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	}
+	return 0
 }
 
 // BadCategories and OKCategories are the only categories a grade may carry,

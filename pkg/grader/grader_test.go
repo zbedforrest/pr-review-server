@@ -156,3 +156,27 @@ func TestPromptListsTheCategoriesAndTheSecurityException(t *testing.T) {
 	assert.Contains(t, p, "committed secret")
 	assert.NotContains(t, p, "{{")
 }
+
+func TestResolveDuplicatesKeepsOneOfAPairThatNamesEachOther(t *testing.T) {
+	items := []Item{{ID: "F1", Severity: "low"}, {ID: "F2", Severity: "medium"}, {ID: "F3", Severity: "medium"}, {ID: "F4", Severity: "low"}}
+	grades := []Grade{
+		{ID: "F1", Grade: GradeBad, Category: "duplicate", DuplicateOf: "F2"},
+		{ID: "F2", Grade: GradeBad, Category: "duplicate", DuplicateOf: "F1"},
+		{ID: "F3", Grade: GradeBad, Category: "duplicate", DuplicateOf: "prior"},
+		{ID: "F4", Grade: GradeBad, Category: "duplicate"},
+	}
+	got := ResolveDuplicates(items, grades)
+
+	assert.Equal(t, GradeOK, got[1].Grade, "the medium of the pair is kept")
+	assert.Equal(t, GradeBad, got[0].Grade, "the low repeats a kept item")
+	assert.Equal(t, GradeBad, got[2].Grade, "a repeat of an earlier point drops")
+	assert.Equal(t, GradeOK, got[3].Grade, "a duplicate naming nothing is kept")
+	assert.Equal(t, GradeBad, grades[1].Grade, "the input is not modified")
+}
+
+func TestResolveDuplicatesDropsARepeatOfAGoodItem(t *testing.T) {
+	items := []Item{{ID: "F1", Severity: "medium"}, {ID: "F2", Severity: "low"}}
+	grades := []Grade{{ID: "F1", Grade: GradeGood, Category: "-"}, {ID: "F2", Grade: GradeBad, Category: "duplicate", DuplicateOf: "F1"}}
+	got := ResolveDuplicates(items, grades)
+	assert.Equal(t, GradeBad, got[1].Grade)
+}
