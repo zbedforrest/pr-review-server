@@ -1,5 +1,6 @@
 export { PRTable } from './PRTable';
 export { PRTableRow } from './PRTableRow';
+export { ConflictIndicator } from './ConflictIndicator';
 export { MergeReadyIndicator } from './MergeReadyIndicator';
 export { RowActionsMenu } from './RowActionsMenu';
 export { QuickActionsSubmenu } from './QuickActionsSubmenu';

@@ -284,8 +284,9 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 	return approvalCount, myReviewStatus, userLatestReview
 }
 
-// attentionByUser reports, per reviewer, whether their standing decision is CHANGES_REQUESTED
-// and no review of theirs targets the current head. Unknown users (no head, a review with
+// attentionByUser reports, per reviewer, whether no review of theirs targets the current
+// head while their standing decision is CHANGES_REQUESTED or their latest decision was
+// dismissed on an older commit (a push dismissing a stale approval). Unknown users (no head, a review with
 // no commit that could have targeted the head, or neither a decision nor a review of the
 // current head inside a truncated review window) are absent rather than false.
 // reviewCountsOfHead counts, per login, the live reviews submitted against
@@ -311,6 +312,7 @@ func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 	}
 
 	decisions := make(map[string]string)
+	dismissedStale := make(map[string]bool)
 	decided := make(map[string]bool)
 	reviewedHead := make(map[string]bool)
 	unknownHead := make(map[string]bool)
@@ -329,9 +331,11 @@ func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 		switch node.State {
 		case "DISMISSED":
 			delete(decisions, username)
+			dismissedStale[username] = node.Commit != nil && node.Commit.OID != headOID
 			decided[username] = true
 		case "APPROVED", "CHANGES_REQUESTED":
 			decisions[username] = node.State
+			dismissedStale[username] = false
 			decided[username] = true
 		}
 	}
@@ -344,8 +348,13 @@ func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 		}
 	}
 
+	for username, stale := range dismissedStale {
+		if stale {
+			decisions[username] = "DISMISSED"
+		}
+	}
 	for username, decision := range decisions {
-		if decision != "CHANGES_REQUESTED" || reviewedHead[username] {
+		if decision == "APPROVED" || reviewedHead[username] {
 			continue
 		}
 		if unknownHead[username] {
