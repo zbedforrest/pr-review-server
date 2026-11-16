@@ -20,6 +20,7 @@ type GradeAgentInput struct {
 	HeadSHA, BaseSHA           string
 	Title, Body                string
 	Items                      []grader.Item
+	Prior                      []grader.Prior
 }
 
 // GradeAgentResult is one grading run's grades and cost.
@@ -85,7 +86,7 @@ func RunAgentGrade(ctx context.Context, cfg AgentConfig, spawner Spawner, in Gra
 			log.Printf("%s WARN: base worktree cleanup failed: %v", logPrefix, cerr)
 		}
 	}()
-	prompt, err := grader.Prompt(in.Title, in.Body, in.HeadSHA, in.BaseSHA, baseDir, in.Items)
+	prompt, err := grader.Prompt(in.Title, in.Body, in.HeadSHA, in.BaseSHA, baseDir, in.Items, in.Prior)
 	if err != nil {
 		return nil, fmt.Errorf("grade agent: prompt: %w", err)
 	}

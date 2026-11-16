@@ -21,9 +21,14 @@ Grades:
 - OK: basically right but with a flaw: overstated severity or scope, a minor detail wrong, or marginal value.
 - BAD: wrong claim, invented regression, wrong mechanism, not this PR's change, severity badly inflated, or pure noise. Two cases count as BAD even when the stated facts are accurate:
   - the comment is about behavior or code that predates this PR, or asks for coverage of a branch this PR did not touch;
-  - the comment objects to a choice the PR deliberately made (stated in its description, in a code comment, or asserted by its tests) without showing a concrete failure, or it is a pure style, whitespace or naming nit, or a "please verify" with no defect shown.
+  - the comment objects to a choice the PR deliberately made (stated in its description, in a code comment, or asserted by its tests). Describing the concrete effect of that choice does not rescue it: the author already decided that effect is acceptable. Only harm the stated intent plainly did not anticipate (data loss, a security hole, a crash, or breaking a flow the PR did not mean to touch) keeps such a comment out of BAD;
+  - it is a pure style, whitespace or naming nit, or a "please verify" with no defect shown;
+  - it is a duplicate: it raises the same defect or root cause as another item in this batch (grade the clearer or higher-severity one on its merits and the other BAD "duplicate"), or as one of the earlier points listed below, even on another line or file. An item with "already_posted": true is that earlier comment itself, carried into this round, so it is never a duplicate of its own earlier point.
   A real issue that is merely overstated or of modest value stays OK.
 - Security exception: a comment that correctly flags a committed secret or credential, or an exploitable security hole, is never BAD for predating the PR.
+
+Points PRism already raised on this PR, and points the author settled on earlier PRs, with what was said since (JSON). A verdict such as "author: intentional" or "won't fix" settles that point for this PR:
+{{PRIOR}}
 
 Items (JSON):
 {{ITEMS}}
@@ -32,4 +37,4 @@ Category: for BAD use exactly one of {{BAD_CATEGORIES}}; for OK use one of {{OK_
 
 Never quote a secret, password, token or key value in a reason; name the file and line instead.
 
-Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": ..., "reason": one or two sentences with concrete file:line evidence}. Grade every id.
+Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": ..., "reason": one or two sentences with concrete file:line evidence}. For a "duplicate", also give "duplicate_of": the id of the item it repeats, or "prior" for an earlier point; of two items that repeat each other, mark only one. Grade every id.
