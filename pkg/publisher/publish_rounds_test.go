@@ -218,28 +218,52 @@ func TestPublish_LifetimeInlineCapShrinksLaterRounds(t *testing.T) {
 	}
 }
 
-func TestPolicy_ForRoundCountsInlineRootsInEveryState(t *testing.T) {
+func TestPublish_FixedThreadsFreeTheirPRCapSlots(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	pol := testPolicy()
+	pol.InlineCap, pol.InlinePRCap = 3, 2
+	publishWith(t, gh, ledger, ledgerRoundOne(), pol)
+	if len(gh.reviews) != 1 || len(gh.reviews[0].comments) != 2 {
+		t.Fatalf("round 1 spends the PR cap on two roots, got %+v", gh.reviews)
+	}
+
+	r2 := ledgerRoundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	r2.Changes = changed("a.go", "b.go")
+	r2.Findings = []payload.Finding{
+		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
+		f("c2", "critical", "a.go", 11, "A new critical after both roots were fixed."),
+	}
+	r2.Commentable["a.go"][11] = true
+	rep := publishWith(t, gh, ledger, r2, pol)
+	if rep.Fixed == 0 || rep.InlinePosted != 1 || len(gh.reviews) != 2 {
+		t.Fatalf("the fixed roots free their slots: report=%+v reviews=%d", rep, len(gh.reviews))
+	}
+}
+
+func TestPolicy_ForRoundCountsOnlyThreadsStillOpen(t *testing.T) {
 	rows := []db.PublishedFinding{
-		{Kind: db.PublishedKindFinding, CommentID: 1, State: db.PublishedStateOpen},
-		{Kind: db.PublishedKindFinding, CommentID: 2, State: db.PublishedStateDismissed},
-		{Kind: db.PublishedKindFinding, CommentID: 3, State: db.PublishedStateFixed},
-		{Kind: db.PublishedKindAnnotation, CommentID: 0, State: db.PublishedStateOpen},
+		{Kind: db.PublishedKindFinding, CommentID: 1, State: db.PublishedStateOpen, Fingerprint: "still"},
+		{Kind: db.PublishedKindFinding, CommentID: 2, State: db.PublishedStateOpen, Fingerprint: "gone"},
+		{Kind: db.PublishedKindFinding, CommentID: 3, State: db.PublishedStateDismissed, Fingerprint: "dismissed"},
+		{Kind: db.PublishedKindFinding, CommentID: 4, State: db.PublishedStateFixed, Fingerprint: "fixed"},
+		{Kind: db.PublishedKindAnnotation, CommentID: 0, State: db.PublishedStateOpen, Fingerprint: "note"},
 		{Kind: db.PublishedKindSummary, CommentID: 500},
 	}
-	if got := InlineRootsPosted(rows); got != 3 {
-		t.Fatalf("posted = %d, want the three roots with comments", got)
+	present := map[string]bool{"still": true, "dismissed": true, "fixed": true, "note": true}
+	if got := InlineRootsOpen(rows, present); got != 1 {
+		t.Fatalf("open = %d, want only the open root this round still reports", got)
 	}
-	pol := Policy{InlineCap: 3, InlinePRCap: 4}.forRound(rows)
-	if pol.InlineCap != 1 {
+	if pol := (Policy{InlineCap: 3, InlinePRCap: 2}).forRound(rows, present); pol.InlineCap != 1 {
 		t.Fatalf("round cap = %d, want the one root the PR cap leaves", pol.InlineCap)
 	}
-	if pol := (Policy{InlineCap: 3, InlinePRCap: 2}).forRound(rows); pol.InlineCap != 0 {
+	if pol := (Policy{InlineCap: 3, InlinePRCap: 1}).forRound(rows, present); pol.InlineCap != 0 {
 		t.Fatalf("an exhausted PR cap gives a zero round cap, got %d", pol.InlineCap)
 	}
-	if pol := (Policy{InlineCap: 3}).forRound(rows); pol.InlineCap != 3 {
+	if pol := (Policy{InlineCap: 3}).forRound(rows, present); pol.InlineCap != 3 {
 		t.Fatalf("no PR cap leaves the round cap alone, got %d", pol.InlineCap)
 	}
-	if pol := (Policy{InlineCap: -1, InlinePRCap: -1}).forRound(nil); pol.InlineCap != DefaultInlineCap || pol.InlinePRCap != DefaultInlinePRCap {
+	if pol := (Policy{InlineCap: -1, InlinePRCap: -1}).forRound(nil, nil); pol.InlineCap != DefaultInlineCap || pol.InlinePRCap != DefaultInlinePRCap {
 		t.Fatalf("negative caps take the defaults: %+v", pol)
 	}
 }
