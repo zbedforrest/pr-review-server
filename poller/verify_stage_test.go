@@ -155,6 +155,40 @@ func TestVerifyOnRecordsADashboardOnlyReviewInTheBackground(t *testing.T) {
 	waitForArtifact(t, f.storage)
 }
 
+func TestVerifyOnAppliesDecisionsToADashboardOnlyReviewWhenDashboardRunsAreVerified(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "bob", dropF1)
+	f.p.cfg.VerifyDashboardRuns = true
+	f.p.cfg.VerifyShadowSample = 0
+	rep := f.run()
+	v := f.review.Comments[0].Verification
+	if rep.Status != "applied" || !rep.Sync || rep.PublishBound || v == nil || !v.Applied || v.Status != types.VerifyDrop {
+		t.Fatalf("report=%+v verification=%+v", rep, v)
+	}
+}
+
+func TestVerifyShadowStillSamplesDashboardOnlyReviewsWhenDashboardRunsAreVerified(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeShadow, "bob", dropF1)
+	f.p.cfg.VerifyDashboardRuns = true
+	f.p.cfg.VerifyShadowSample = 0
+	if rep := f.run(); rep.Sync || rep.Skip != "not_sampled" || f.completer.calls != 0 {
+		t.Fatalf("report=%+v calls=%d", rep, f.completer.calls)
+	}
+}
+
+func TestVerifiedDashboardOnlyReviewsStopBeforeTheWholeBudget(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "bob", dropF1)
+	f.p.cfg.VerifyDashboardRuns = true
+	f.p.cfg.VerifyDailyBudgetUSD = 1
+	f.p.verifySpend.add(time.Now(), 0.8)
+	if rep := f.run(); rep.Skip != "over_budget" || f.completer.calls != 0 {
+		t.Fatalf("dashboard-only report=%+v calls=%d", rep, f.completer.calls)
+	}
+	f.exec.Job.PR.Author = "alice"
+	if rep := f.run(); rep.Status != "applied" {
+		t.Fatalf("publish-bound review was starved: %+v", rep)
+	}
+}
+
 func TestVerifySkipsADashboardOnlyReviewOutsideTheSample(t *testing.T) {
 	f := newVerifyFixture(t, verifyModeShadow, "bob", dropF1)
 	f.p.cfg.VerifyShadowSample = 0
@@ -339,7 +373,7 @@ func TestShadowVerificationStopsBeforeTheWholeBudget(t *testing.T) {
 	if rep.Skip != "over_budget" {
 		t.Fatalf("shadow report = %+v", rep)
 	}
-	sync := &VerifyReport{Mode: verifyModeOn, Sync: true}
+	sync := &VerifyReport{Mode: verifyModeOn, Sync: true, PublishBound: true}
 	f.p.runVerify(context.Background(), verifyTarget{CloneRoot: "/tmp/x"}, verify.Input{Findings: []verify.Finding{{Key: "F1", Comment: f.review.Comments[0]}}}, sync)
 	if sync.Skip == "over_budget" {
 		t.Fatalf("publish-bound run was starved: %+v", sync)

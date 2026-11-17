@@ -25,9 +25,11 @@ const (
 
 // VerifyReport is the review-level account of one verification.
 type VerifyReport struct {
-	Mode   string `json:"mode"`
-	Sync   bool   `json:"sync"`
-	Status string `json:"status"` // applied, recorded, pending, incomplete, failed, skipped
+	Mode string `json:"mode"`
+	Sync bool   `json:"sync"`
+	// PublishBound is whether the review was going to post when verified.
+	PublishBound bool   `json:"publish_bound"`
+	Status       string `json:"status"` // applied, recorded, pending, incomplete, failed, skipped
 	// Skip is why verification did not run: no_findings, not_sampled,
 	// over_budget, too_large, agent_off, busy, deadline.
 	Skip            string         `json:"skip,omitempty"`
@@ -108,10 +110,11 @@ var (
 	escalateVerifyFn = service.EscalateVerify
 )
 
-// verifyShadowBudgetShare is the part of the daily budget background
-// (shadow) verifications may spend, so they cannot starve the publish-bound
-// ones that change what posts.
-const verifyShadowBudgetShare = 0.7
+// verifyUnpostedBudgetShare is the part of a daily budget that work changing
+// nothing on GitHub may spend (background verifications and dashboard-only
+// reviews), so it cannot starve the publish-bound reviews that change what
+// posts.
+const verifyUnpostedBudgetShare = 0.7
 
 // verifyBackground bounds background verifications per process; one that
 // finds it full is skipped rather than queued.
@@ -125,8 +128,9 @@ type verifyTarget struct {
 
 // verifyEnsembleReview runs the repo-evidence verifier on a merged ensemble
 // review. In on mode a publish-bound review waits for it and its decisions
-// are applied; every other covered review is verified in the background and
-// only recorded, so it changes nothing that posts and adds no latency.
+// are applied, and so does a dashboard-only one when VerifyDashboardRuns is
+// set; every other covered review is verified in the background and only
+// recorded, so it changes nothing and adds no latency.
 func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExecution, base service.AgentConfig, result *service.ReviewResult, review *service.AgentReview) *VerifyReport {
 	if p.cfg == nil || p.cfg.EnsembleVerify == "" || p.cfg.EnsembleVerify == verifyModeOff {
 		return nil
@@ -148,8 +152,9 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 	}
 	job := execution.Job
 	bound := p.reviewPublishBound(job)
-	rep.Sync = mode == verifyModeOn && bound
-	if !bound && verifySampleDraw() >= p.cfg.VerifyShadowSample {
+	rep.PublishBound = bound
+	rep.Sync = mode == verifyModeOn && (bound || p.cfg.VerifyDashboardRuns)
+	if !rep.Sync && !bound && verifySampleDraw() >= p.cfg.VerifyShadowSample {
 		rep.Status, rep.Skip = "skipped", "not_sampled"
 		return rep
 	}
@@ -202,10 +207,7 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input, rep *VerifyReport) []types.LineComment {
 	start := time.Now()
 	defer func() { rep.DurationMS = time.Since(start).Milliseconds() }()
-	capUSD := p.cfg.VerifyDailyBudgetUSD
-	if !rep.Sync {
-		capUSD *= verifyShadowBudgetShare
-	}
+	capUSD := p.verifyBudgetFor(rep)
 	if !p.verifySpend.allow(start, capUSD) {
 		rep.Status, rep.Skip = "skipped", "over_budget"
 		return nil
@@ -267,14 +269,20 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 	return res.Comments
 }
 
+// verifyBudgetFor is the daily cap one verification is held to: the whole
+// budget when its decisions decide what posts, a share of it otherwise.
+func (p *Poller) verifyBudgetFor(rep *VerifyReport) float64 {
+	if rep.Sync && rep.PublishBound {
+		return p.cfg.VerifyDailyBudgetUSD
+	}
+	return p.cfg.VerifyDailyBudgetUSD * verifyUnpostedBudgetShare
+}
+
 // escalateVerify runs the escalation agent over the findings the packet
 // could not settle and folds its account into rep.
 func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.Input, pkt *verify.Packet, comments []types.LineComment, rep *VerifyReport) {
 	start := time.Now()
-	capUSD := p.cfg.VerifyDailyBudgetUSD
-	if !rep.Sync {
-		capUSD *= verifyShadowBudgetShare
-	}
+	capUSD := p.verifyBudgetFor(rep)
 	if !p.verifySpend.allow(start, capUSD) {
 		rep.AgentError = "over_budget"
 		return

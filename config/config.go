@@ -103,12 +103,16 @@ type Config struct {
 	// VerifyDailyBudgetUSD is spent (UTC day) verification stops until the
 	// next day, 0 meaning no cap (a negative value keeps the default).
 	// VerifyShadowSample is the share of dashboard-only reviews verified in
-	// shadow mode.
+	// the background, where decisions are recorded but not applied.
+	// VerifyDashboardRuns (default on) makes on mode verify and gate
+	// dashboard-only reviews like publish-bound ones, so their findings and
+	// merge confidence are settled the same way.
 	VerifyModel          string
 	VerifyWallClockSec   int
 	VerifyMaxInputTokens int
 	VerifyDailyBudgetUSD float64
 	VerifyShadowSample   float64
+	VerifyDashboardRuns  bool
 	// VerifyEscalate sends findings the packet check marks unavailable to a
 	// read-only agent run (VerifyAgent*; backend and model default to the
 	// review agent's backend with Opus 5.5).
@@ -472,6 +476,7 @@ func Load() *Config {
 		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
 		VerifyDailyBudgetUSD:        verifyBudget(getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150)),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
+		VerifyDashboardRuns:         getEnvBoolOrDefault("VERIFY_DASHBOARD_RUNS", true),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
 		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", false),
 		VerifyDemoteMedium:          getEnvBoolOrDefault("VERIFY_DEMOTE_MEDIUM", true),

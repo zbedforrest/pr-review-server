@@ -130,6 +130,41 @@ func TestGateSkipsOffDashboardOnlyAndOverBudgetReviews(t *testing.T) {
 	}
 }
 
+func TestGateOnGradesADashboardOnlyReviewWhenDashboardRunsAreVerified(t *testing.T) {
+	f := newGateFixture(t, gateModeOn, "bob", map[string]string{"a.go": "BAD", "c.go": "GOOD"}, nil)
+	f.p.cfg.VerifyDashboardRuns = true
+	rep := f.run()
+	if rep.Status != "applied" || rep.Dropped != 1 || !f.review.Comments[0].Verification.GateDrops() {
+		t.Fatalf("report=%+v finding=%+v", rep, f.review.Comments[0].Verification)
+	}
+}
+
+func TestGateShadowStillSkipsDashboardOnlyReviewsWhenDashboardRunsAreVerified(t *testing.T) {
+	f := newGateFixture(t, gateModeShadow, "bob", map[string]string{"a.go": "BAD"}, nil)
+	f.p.cfg.VerifyDashboardRuns = true
+	if rep := f.run(); rep.Skip != "not_publish_bound" || f.seen != nil {
+		t.Fatalf("report=%+v graded=%d", rep, len(f.seen))
+	}
+}
+
+func TestGatedDashboardOnlyReviewsStopBeforeTheWholeBudget(t *testing.T) {
+	day := time.Now().UTC().Format("2006-01-02")
+	gateSpendDay = ""
+	gateSpent(day, 0.8)
+	t.Cleanup(func() { gateSpendDay = "" })
+	dashboard := newGateFixture(t, gateModeOn, "bob", map[string]string{"c.go": "GOOD"}, nil)
+	dashboard.p.cfg.VerifyDashboardRuns = true
+	dashboard.p.cfg.QualityGateBudgetUSD = 1
+	if rep := dashboard.run(); rep.Skip != "over_budget" {
+		t.Fatalf("dashboard-only report = %+v", rep)
+	}
+	bound := newGateFixture(t, gateModeOn, "alice", map[string]string{"c.go": "GOOD"}, nil)
+	bound.p.cfg.QualityGateBudgetUSD = 1
+	if rep := bound.run(); rep.Status != "applied" {
+		t.Fatalf("publish-bound review was starved: %+v", rep)
+	}
+}
+
 func TestGatePriorsMarksLedgerRowsPostedAndLabelsSettledPoints(t *testing.T) {
 	priors := []service.PriorFinding{
 		{ID: "a.go:1:abc", State: "contested", File: "a.go", LineFrom: 10, LineTo: 19, Headline: "Old rows win", Verdicts: []string{"author: intentional"}},
