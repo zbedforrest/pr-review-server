@@ -75,8 +75,11 @@ func (p *Poller) gateTimeoutAllowance() time.Duration {
 // qualityGateReview grades every finding a publish-bound Lite (ensemble)
 // review is about to post with the grader rubric, including the fallback
 // run's review. In on mode a BAD grade keeps the finding off GitHub (a
-// CRITICAL is posted as a LOW note instead); shadow mode only records. Any
-// failure leaves the review as it was, and every outcome logs a [GATE] line.
+// CRITICAL is posted as a LOW note instead); shadow mode only records. On
+// mode also grades a dashboard-only review when VerifyDashboardRuns is set,
+// within a share of the budget, so its merge confidence counts the same
+// findings a posted review's would. Any failure leaves the review as it was,
+// and every outcome logs a [GATE] line.
 func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecution, base service.AgentConfig, result *service.ReviewResult, review *service.AgentReview) *GateReport {
 	if p.cfg == nil || (p.cfg.QualityGate != gateModeShadow && p.cfg.QualityGate != gateModeOn) {
 		return nil
@@ -88,8 +91,12 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		log.Printf("[GATE %s/%s#%d] {\"mode\":%q,\"status\":\"skipped\",\"skip\":%q}", job.PR.Owner, job.PR.Repo, job.PR.Number, rep.Mode, why)
 		return rep
 	}
+	budget := p.cfg.QualityGateBudgetUSD
 	if !p.reviewPublishBound(job) {
-		return skip("not_publish_bound")
+		if rep.Mode != gateModeOn || !p.cfg.VerifyDashboardRuns {
+			return skip("not_publish_bound")
+		}
+		budget *= verifyUnpostedBudgetShare
 	}
 	prior, posted := gatePriors(p.priorFindingsFor(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.Author))
 	var items []grader.Item
@@ -110,7 +117,7 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		return skip("no_findings")
 	}
 	day := time.Now().UTC().Format("2006-01-02")
-	if p.cfg.QualityGateBudgetUSD > 0 && gateSpent(day, 0) >= p.cfg.QualityGateBudgetUSD {
+	if budget > 0 && gateSpent(day, 0) >= budget {
 		return skip("over_budget")
 	}
 	in := service.GradeAgentInput{Owner: job.PR.Owner, Repo: job.PR.Repo, PRNumber: job.PR.Number, DefaultBranch: result.BaseRef,
