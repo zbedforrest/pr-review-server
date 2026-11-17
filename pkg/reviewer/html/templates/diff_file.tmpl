@@ -16,6 +16,7 @@
                     {{template "comment-counter" .}}
                     {{.CommentBody | markdownify}}
                     {{template "counterargument" .}}
+                    {{template "verification-note" .}}
                 </div>
                 {{end}}
             </div>
@@ -38,6 +39,7 @@
                     {{template "comment-counter" .}}
                     {{.CommentBody | markdownify}}
                     {{template "counterargument" .}}
+                    {{template "verification-note" .}}
                 </div>
                 {{end}}
             </div>

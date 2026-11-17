@@ -58,6 +58,7 @@ type CommentView struct {
 	AnchorID     string        // "finding-<counter>", the target of the findings-index link
 	StatusPill   string        // "" for confirmed findings
 	StatusClass  string
+	VerifyMark
 }
 
 // ShowsSeverity is false for the summary and check entries, whose headers
@@ -101,6 +102,83 @@ func severityClass(severity string) string {
 	return "note"
 }
 
+// VerifyMark is how the verifier and the quality gate left a finding. It is
+// separate from the index groups, which record what the reviewing agent
+// itself concluded: a finding the agent confirmed can still be refuted here.
+type VerifyMark struct {
+	VerifyPill    string
+	VerifyClass   string
+	VerifyNote    string   // one-line meaning of the pill, shown on hover
+	VerifyReasons []string // what the verifier and the gate said, when they said anything
+}
+
+// Verification marks, in the order the report counts them.
+const (
+	verifyVerified    = "VERIFIED"
+	verifyRevised     = "VERIFIED · REVISED"
+	verifyDisputed    = "DISPUTED"
+	verifyRefuted     = "REFUTED"
+	verifyGradedBad   = "GRADED BAD"
+	verifyUnavailable = "COULD NOT VERIFY"
+	verifyNone        = "NOT VERIFIED"
+)
+
+var verifyMarkOrder = []string{verifyVerified, verifyRevised, verifyDisputed, verifyRefuted, verifyGradedBad, verifyUnavailable, verifyNone}
+
+// VerifyCount is one verification mark and how many findings carry it.
+type VerifyCount struct {
+	Label string
+	Class string
+	Count int
+}
+
+// verifyMarkFor labels a finding by its applied verification. A decision that
+// was only recorded (shadow mode) changed nothing, so it reads as not
+// verified. The verifier's withdrawal outranks the gate's grade, and a BAD
+// grade outranks a kept finding, since either keeps it from being posted.
+func verifyMarkFor(v *types.Verification) VerifyMark {
+	m := VerifyMark{VerifyPill: verifyNone, VerifyClass: "none", VerifyNote: "No verifier checked this finding against the repository."}
+	if v == nil {
+		return m
+	}
+	if v.Applied && strings.TrimSpace(v.Reason) != "" {
+		m.VerifyReasons = append(m.VerifyReasons, "Verifier: "+strings.TrimSpace(v.Reason))
+	}
+	if v.GateApplied && strings.TrimSpace(v.GateReason) != "" {
+		m.VerifyReasons = append(m.VerifyReasons, fmt.Sprintf("Quality gate (%s): %s", v.Gate, strings.TrimSpace(v.GateReason)))
+	}
+	gateBad := v.GateApplied && v.Gate == "BAD"
+	status := v.Status
+	if !v.Applied {
+		status = ""
+	}
+	switch {
+	case status == types.VerifyDrop:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyRefuted, "refuted", "The verifier checked the repository and found the claim wrong."
+	case status == types.VerifyHold:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyDisputed, "disputed", "The verifier could not stand behind the claim as written, so it is held back."
+	case gateBad:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyGradedBad, "refuted", "The quality gate graded this finding BAD, so it is not posted as written."
+	case status == types.VerifyKeep:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyVerified, "verified", "The verifier checked the claim against the repository and kept it."
+	case status == types.VerifyRevise:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyRevised, "verified", "The verifier checked the claim against the repository and corrected it."
+	case status == types.VerifyUnavailable:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyUnavailable, "unavailable", "The verifier looked but the repository could not settle the claim."
+	}
+	return m
+}
+
+func verifyCounts(byPill map[string]VerifyMark, counts map[string]int) []VerifyCount {
+	var out []VerifyCount
+	for _, label := range verifyMarkOrder {
+		if n := counts[label]; n > 0 {
+			out = append(out, VerifyCount{Label: strings.ToLower(label), Class: byPill[label].VerifyClass, Count: n})
+		}
+	}
+	return out
+}
+
 // Findings-index groups, in reading order.
 const (
 	groupConfirmed  = "Confirmed"
@@ -117,6 +195,7 @@ type FindingRow struct {
 	FilePath    string
 	LineNumber  int
 	Title       string
+	VerifyMark
 }
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
@@ -170,6 +249,7 @@ type FixFirstItem struct {
 	FilePath   string
 	LineNumber int
 	Title      string
+	VerifyMark
 }
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
@@ -629,7 +709,7 @@ func fixFirstItems(ids []string, byID map[string]CommentView) []FixFirstItem {
 			continue
 		}
 		seen[v.AnchorID] = true
-		out = append(out, FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
+		out = append(out, FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment), VerifyMark: v.VerifyMark})
 	}
 	return out
 }
@@ -652,6 +732,7 @@ func generateReport(in ReportInput) (string, error) {
 	}
 	byID := map[string]CommentView{}
 	anchors := map[string]string{}
+	verifyTally, verifyMarks := map[string]int{}, map[string]VerifyMark{}
 
 	for i, comment := range activeComments {
 		view := CommentView{
@@ -684,6 +765,9 @@ func generateReport(in ReportInput) (string, error) {
 		counts[group]++
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
 		view.StatusPill, view.StatusClass = pill, class
+		view.VerifyMark = verifyMarkFor(comment.Verification)
+		verifyTally[view.VerifyPill]++
+		verifyMarks[view.VerifyPill] = view.VerifyMark
 		if comment.ID != "" {
 			byID[comment.ID] = view
 			anchors[comment.ID] = view.AnchorID
@@ -699,7 +783,7 @@ func generateReport(in ReportInput) (string, error) {
 		}
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
-			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment),
+			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment), VerifyMark: view.VerifyMark,
 		}
 
 		if comment.FilePath == "GENERAL" {
@@ -794,6 +878,7 @@ func generateReport(in ReportInput) (string, error) {
 		UnverifiedCount      int
 		MechanicalCount      int
 		RejectedCount        int
+		VerifyCounts         []VerifyCount
 		Suggestions          string
 		FixFirst             []FixFirstItem
 		Rejected             []RecordView
@@ -833,6 +918,7 @@ func generateReport(in ReportInput) (string, error) {
 		UnverifiedCount: counts[groupNeedsCheck],
 		MechanicalCount: counts[groupMechanical],
 		RejectedCount:   len(rejected),
+		VerifyCounts:    verifyCounts(verifyMarks, verifyTally),
 		Suggestions:     suggestions,
 		FixFirst:        actions,
 		Rejected:        rejected,
