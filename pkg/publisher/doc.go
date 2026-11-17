@@ -133,7 +133,7 @@
 // summary-only annotation) may still be promoted inline when its line
 // becomes commentable. The round cap (Policy.InlineCap) shrinks to what the
 // PR cap (Policy.InlinePRCap, publish_inline_pr_cap) leaves after the inline
-// roots the ledger already holds in any state; findings over either cap
+// roots still open that this round still reports; findings over either cap
 // stay summary-only annotations.
 //
 // Severity clamp. A finding matched to a non-terminal row keeps the row's

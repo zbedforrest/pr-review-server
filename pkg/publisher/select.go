@@ -12,7 +12,7 @@ import (
 
 // Greptile posts about half an inline comment per PR; the caps and the
 // current-impact gate below are what keep PRism in that range. The per-round
-// cap bounds one push, the per-PR cap the whole life of the PR.
+// cap bounds one push, the per-PR cap the threads open on the PR at once.
 const (
 	DefaultInlineCap         = 3
 	DefaultInlinePRCap       = 6
@@ -25,8 +25,9 @@ const (
 type Policy struct {
 	InlineCap         int
 	InlineMinSeverity string
-	// InlinePRCap bounds the inline roots posted over the life of a PR, in
-	// every state; the round cap shrinks to what is left. Zero is no bound,
+	// InlinePRCap bounds the inline threads open on a PR at once; one the
+	// round finds fixed, or the author dismissed, frees its slot, and the
+	// round cap shrinks to what is left. Zero is no bound,
 	// negative the default (PUBLISH_INLINE_PR_BUDGET=false sets zero).
 	InlinePRCap int
 	// ShowUnverified folds the active first-pass claims the agent did not
@@ -199,7 +200,7 @@ func envOff(name string) bool {
 }
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
-// round and six per PR, medium severity and above, unverified first-pass
+// round and six open per PR, medium severity and above, unverified first-pass
 // claims folded, the ledger decision table, thread resolution,
 // cross-reviewer reconciliation, both claim holds, the settled-point alias,
 // note reconciliation and the cross-PR settled memory on.
@@ -225,25 +226,44 @@ func (p Policy) withDefaults() Policy {
 }
 
 // forRound is the policy one round selects under: the round cap, lowered to
-// whatever the PR cap still allows after the inline roots the ledger holds.
-func (p Policy) forRound(previous []db.PublishedFinding) Policy {
+// whatever the PR cap still allows after the inline threads still open.
+func (p Policy) forRound(previous []db.PublishedFinding, present map[string]bool) Policy {
 	p = p.withDefaults()
 	if p.InlinePRCap <= 0 {
 		return p
 	}
-	if left := p.InlinePRCap - InlineRootsPosted(previous); left < p.InlineCap {
+	if left := p.InlinePRCap - InlineRootsOpen(previous, present); left < p.InlineCap {
 		p.InlineCap = max(left, 0)
 	}
 	return p
 }
 
-// InlineRootsPosted counts the inline root comments the ledger records for
-// the PR, in any state: a resolved or dismissed thread still took the
-// reviewer's attention once.
-func InlineRootsPosted(previous []db.PublishedFinding) int {
+// stillReported is the set of ledger fingerprints this round still reports:
+// its findings and the ones it holds, each also under the row it aliases to.
+func stillReported(findings []payload.Finding, held map[string]payload.Finding, rows map[string]*db.PublishedFinding) map[string]bool {
+	present := make(map[string]bool, len(findings)+len(held))
+	mark := func(id string) {
+		present[id] = true
+		if row := rows[id]; row != nil {
+			present[row.Fingerprint] = true
+		}
+	}
+	for _, f := range findings {
+		mark(f.ID)
+	}
+	for id := range held {
+		mark(id)
+	}
+	return present
+}
+
+// InlineRootsOpen counts the inline root comments whose ledger row is open
+// and whose finding this round still reports (present). A thread this round
+// marks fixed, and one the author dismissed or settled, frees its slot.
+func InlineRootsOpen(previous []db.PublishedFinding, present map[string]bool) int {
 	n := 0
 	for _, row := range previous {
-		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 && row.State == db.PublishedStateOpen && present[row.Fingerprint] {
 			n++
 		}
 	}

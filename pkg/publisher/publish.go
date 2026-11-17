@@ -227,7 +227,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	// The legacy ledger has no withdrawal; a refuted root stays open and
 	// listed, since its thread is still open on GitHub.
 	r.Findings = append(r.Findings, sortedFindings(refuted)...)
-	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
+	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous, stillReported(r.Findings, held, published)))
 	r.ShowUnverified = p.Policy.ShowUnverified
 	// The counts see a held finding as present but not shown: absence by
 	// the gate is not a fix, and the summary never announces what it lists
