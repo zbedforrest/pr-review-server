@@ -171,3 +171,26 @@ func TestGenerateReport_ShowsTheCostOfEachStage(t *testing.T) {
 	assert.Contains(t, report, "<td>$0.88</td>")
 	assert.NotContains(t, report, "Candidate tokens")
 }
+
+func TestGenerateReport_GroupsTheIndexByHowFindingsPost(t *testing.T) {
+	finding := func(id, sev, body string) types.LineComment {
+		return types.LineComment{ID: id, FilePath: "a.go", LineNumber: 0, Importance: sev, State: stateConfirmed, CommentBody: body}
+	}
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{
+			finding("F1", "LOW", "A low note."),
+			finding("F2", "MEDIUM", "A medium inline."),
+			finding("F3", "CRITICAL", "A critical inline."),
+			{FilePath: "b.go", Importance: "MEDIUM", State: stateUnverified, CommentBody: "An unverified claim."},
+		},
+		Publish: PublishView{Inline: func(c types.LineComment) bool { return c.Importance != "LOW" }},
+	})
+	require.NoError(t, err)
+	index := report[strings.Index(report, `<div class="findings-index">`):]
+	inline, notes, unverified := strings.Index(index, "<h3>Inline comments on the PR</h3>"), strings.Index(index, "<h3>Summary notes</h3>"), strings.Index(index, "<h3>Needs verification</h3>")
+	require.True(t, inline >= 0 && notes > inline && unverified > notes, "inline, then notes, then unverified")
+	critical, medium, low := strings.Index(index, "A critical inline."), strings.Index(index, "A medium inline."), strings.Index(index, "A low note.")
+	assert.True(t, inline < critical && critical < medium && medium < notes && notes < low, "severity order inside each group")
+	assert.NotContains(t, index, "<h3>Confirmed</h3>")
+}

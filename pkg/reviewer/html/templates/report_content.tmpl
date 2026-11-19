@@ -140,6 +140,7 @@
         <h2>Findings</h2>
         {{range .FindingGroups}}
         <h3>{{.Name}}</h3>
+        {{if .Hint}}<p class="group-hint">{{.Hint}}</p>{{end}}
         <ul class="findings-list">
             {{range .Rows}}
             <li class="finding-row">
