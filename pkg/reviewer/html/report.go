@@ -116,14 +116,18 @@ type VerifyMark struct {
 const (
 	verifyVerified    = "VERIFIED"
 	verifyRevised     = "VERIFIED · REVISED"
-	verifyDisputed    = "DISPUTED"
+	verifyGradedGood  = "GRADED GOOD"
+	verifyGradedOK    = "GRADED OK"
+	verifyDemoted     = "DEMOTED TO NOTE"
+	verifyHeld        = "HELD"
+	verifyLowValue    = "LOW VALUE"
 	verifyRefuted     = "REFUTED"
 	verifyGradedBad   = "GRADED BAD"
 	verifyUnavailable = "COULD NOT VERIFY"
 	verifyNone        = "NOT VERIFIED"
 )
 
-var verifyMarkOrder = []string{verifyVerified, verifyRevised, verifyDisputed, verifyRefuted, verifyGradedBad, verifyUnavailable, verifyNone}
+var verifyMarkOrder = []string{verifyVerified, verifyRevised, verifyGradedGood, verifyGradedOK, verifyDemoted, verifyHeld, verifyLowValue, verifyRefuted, verifyGradedBad, verifyUnavailable, verifyNone}
 
 // VerifyCount is one verification mark and how many findings carry it.
 type VerifyCount struct {
@@ -134,8 +138,8 @@ type VerifyCount struct {
 
 // verifyMarkFor labels a finding by its applied verification. A decision that
 // was only recorded (shadow mode) changed nothing, so it reads as not
-// verified. The verifier's withdrawal outranks the gate's grade, and a BAD
-// grade outranks a kept finding, since either keeps it from being posted.
+// verified. Whatever keeps the finding off the PR outranks a kept finding;
+// a gate grade labels the finding only when the verifier did not decide.
 func verifyMarkFor(v *types.Verification) VerifyMark {
 	m := VerifyMark{VerifyPill: verifyNone, VerifyClass: "none", VerifyNote: "No verifier checked this finding against the repository."}
 	if v == nil {
@@ -144,29 +148,54 @@ func verifyMarkFor(v *types.Verification) VerifyMark {
 	if v.Applied && strings.TrimSpace(v.Reason) != "" {
 		m.VerifyReasons = append(m.VerifyReasons, "Verifier: "+strings.TrimSpace(v.Reason))
 	}
+	if v.Applied && v.LowValue && strings.TrimSpace(v.ValueReason) != "" {
+		m.VerifyReasons = append(m.VerifyReasons, "Not worth posting: "+strings.TrimSpace(v.ValueReason))
+	}
 	if v.GateApplied && strings.TrimSpace(v.GateReason) != "" {
 		m.VerifyReasons = append(m.VerifyReasons, fmt.Sprintf("Quality gate (%s): %s", v.Gate, strings.TrimSpace(v.GateReason)))
 	}
-	gateBad := v.GateApplied && v.Gate == "BAD"
 	status := v.Status
 	if !v.Applied {
 		status = ""
+	}
+	gate := ""
+	if v.GateApplied {
+		gate = v.Gate
 	}
 	switch {
 	case status == types.VerifyDrop:
 		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyRefuted, "refuted", "The verifier checked the repository and found the claim wrong."
 	case status == types.VerifyHold:
-		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyDisputed, "disputed", "The verifier could not stand behind the claim as written, so it is held back."
-	case gateBad:
-		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyGradedBad, "refuted", "The quality gate graded this finding BAD, so it is not posted as written."
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyHeld, "disputed", "The verifier could not stand behind the claim as written, so it is not posted."
+	case v.Applied && v.LowValue:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyLowValue, "disputed", "The verifier judged this true but not worth posting."
+	case gate == "BAD" && v.GateDemoted:
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyDemoted, "disputed", "The quality gate graded this critical BAD, so it is posted as a LOW note."
+	case gate == "BAD":
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyGradedBad, "refuted", "The quality gate graded this finding BAD, so it is not posted."
 	case status == types.VerifyKeep:
 		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyVerified, "verified", "The verifier checked the claim against the repository and kept it."
 	case status == types.VerifyRevise:
 		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyRevised, "verified", "The verifier checked the claim against the repository and corrected it."
 	case status == types.VerifyUnavailable:
 		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyUnavailable, "unavailable", "The verifier looked but the repository could not settle the claim."
+	case gate == "GOOD":
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyGradedGood, "verified", "The quality gate graded this finding GOOD; no verifier checked it against the repository."
+	case gate == "OK":
+		m.VerifyPill, m.VerifyClass, m.VerifyNote = verifyGradedOK, "unavailable", "The quality gate graded this finding OK; no verifier checked it against the repository."
 	}
 	return m
+}
+
+// verificationRan reports whether any verifier or gate decision was applied
+// to the review's findings; without one, every pill would read NOT VERIFIED.
+func verificationRan(comments []types.LineComment) bool {
+	for _, c := range comments {
+		if v := c.Verification; v != nil && (v.Applied && v.Status != types.VerifySkipped || v.GateApplied) {
+			return true
+		}
+	}
+	return false
 }
 
 func verifyCounts(byPill map[string]VerifyMark, counts map[string]int) []VerifyCount {
@@ -755,6 +784,7 @@ func generateReport(in ReportInput) (string, error) {
 	byID := map[string]CommentView{}
 	anchors := map[string]string{}
 	verifyTally, verifyMarks := map[string]int{}, map[string]VerifyMark{}
+	showVerification := verificationRan(activeComments)
 
 	for i, comment := range activeComments {
 		view := CommentView{
@@ -787,9 +817,11 @@ func generateReport(in ReportInput) (string, error) {
 		counts[group]++
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
 		view.StatusPill, view.StatusClass = pill, class
-		view.VerifyMark = verifyMarkFor(comment.Verification)
-		verifyTally[view.VerifyPill]++
-		verifyMarks[view.VerifyPill] = view.VerifyMark
+		if showVerification {
+			view.VerifyMark = verifyMarkFor(comment.Verification)
+			verifyTally[view.VerifyPill]++
+			verifyMarks[view.VerifyPill] = view.VerifyMark
+		}
 		if comment.ID != "" {
 			byID[comment.ID] = view
 			anchors[comment.ID] = view.AnchorID

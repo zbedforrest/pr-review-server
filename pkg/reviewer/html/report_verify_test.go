@@ -23,11 +23,16 @@ func TestVerifyMarkForLabelsEachAppliedOutcome(t *testing.T) {
 		{"skipped", &types.Verification{Status: types.VerifySkipped, Applied: true}, verifyNone, "none"},
 		{"kept", &types.Verification{Status: types.VerifyKeep, Applied: true}, verifyVerified, "verified"},
 		{"revised", &types.Verification{Status: types.VerifyRevise, Applied: true}, verifyRevised, "verified"},
-		{"held", &types.Verification{Status: types.VerifyHold, Applied: true}, verifyDisputed, "disputed"},
+		{"held", &types.Verification{Status: types.VerifyHold, Applied: true}, verifyHeld, "disputed"},
 		{"dropped", &types.Verification{Status: types.VerifyDrop, Applied: true}, verifyRefuted, "refuted"},
 		{"unavailable", &types.Verification{Status: types.VerifyUnavailable, Applied: true}, verifyUnavailable, "unavailable"},
 		{"kept but graded bad", &types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "BAD", GateApplied: true}, verifyGradedBad, "refuted"},
 		{"dropped and graded bad", &types.Verification{Status: types.VerifyDrop, Applied: true, Gate: "BAD", GateApplied: true}, verifyRefuted, "refuted"},
+		{"low value", &types.Verification{Status: types.VerifyKeep, Applied: true, LowValue: true}, verifyLowValue, "disputed"},
+		{"critical graded bad and demoted", &types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "BAD", GateApplied: true, GateDemoted: true}, verifyDemoted, "disputed"},
+		{"gate only, good", &types.Verification{Status: types.VerifySkipped, Gate: "GOOD", GateApplied: true}, verifyGradedGood, "verified"},
+		{"gate only, ok", &types.Verification{Status: types.VerifySkipped, Gate: "OK", GateApplied: true}, verifyGradedOK, "unavailable"},
+		{"kept and graded good", &types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "GOOD", GateApplied: true}, verifyVerified, "verified"},
 		{"bad grade recorded in shadow", &types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "BAD"}, verifyVerified, "verified"},
 	}
 	for _, tc := range cases {
@@ -94,4 +99,17 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	assert.Contains(t, report, "Other is unused.")
 	assert.Contains(t, report, ">1 confirmed</span>")
 	assert.Contains(t, report, ">1 withheld</span>")
+}
+
+func TestGenerateReport_ShowsNoVerificationPillsWhenNothingWasVerified(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{
+			{FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", CommentBody: "Handle drops the error."},
+			{FilePath: "b.go", LineNumber: 9, Importance: "LOW", CommentBody: "Other is unused.", Verification: &types.Verification{Status: types.VerifySkipped, Applied: true}},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, report, "NOT VERIFIED")
+	assert.NotContains(t, report, "not verified</span>")
 }
