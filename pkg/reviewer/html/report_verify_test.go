@@ -160,3 +160,14 @@ func TestGenerateReport_EmbedsNoChatClientOrDuplicateDiff(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(report, "distinctiveDiffLine"))
 	assert.Contains(t, report, "the prompt")
 }
+
+func TestGenerateReport_ShowsTheCostOfEachStage(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Stages: []StageRecord{{Name: "Review runs", Model: "flash", Detail: "5 valid", CostUSD: 0.30, DurationMS: 90_000}, {Name: "Quality gate", CostUSD: 0.58}},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, report, "<td>Review runs</td><td>flash</td><td>5 valid</td><td>1m30s</td><td>$0.30</td>")
+	assert.Contains(t, report, "<td>$0.88</td>")
+	assert.NotContains(t, report, "Candidate tokens")
+}

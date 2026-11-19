@@ -12,6 +12,7 @@ import (
 
 	"github.com/fatih/color"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/html"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -185,6 +186,8 @@ type ReviewResult struct {
 	// Lite", "Profile: Custom (based on Lite)" plus what changed).
 	ProfileTitle      string
 	ProfileDeviations []string
+	// ReportStages is the per-stage account the report's generation block shows.
+	ReportStages []html.StageRecord
 	// Importance counts (computed from Comments)
 	CriticalCount int
 	MediumCount   int
