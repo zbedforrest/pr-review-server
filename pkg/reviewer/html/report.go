@@ -642,11 +642,6 @@ func ParseDiff(diff string) []*DiffFile {
 	return files
 }
 
-// GenerateReport creates an HTML report from a slice of line comments and a diff string.
-func GenerateReport(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time) (string, error) {
-	return GenerateReportWithContext(comments, diff, prNumber, prURL, prBody, prompt, commitSHA, modelName, promptTokenCount, candidatesTokenCount, totalTokenCount, generatedAt, nil)
-}
-
 // CheckRecord is one required check as the report shows it in review
 // details (mirrors the service layer's record without importing it).
 type CheckRecord struct {
@@ -701,15 +696,6 @@ type PublishView struct {
 // GenerateReportFrom renders the review report from a ReportInput.
 func GenerateReportFrom(in ReportInput) (string, error) {
 	return generateReport(in)
-}
-
-// GenerateReportWithContext creates an HTML report with additional file context for adjacent comments and token counting.
-func GenerateReportWithContext(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time, fileContents map[string]string) (string, error) {
-	return generateReport(ReportInput{
-		Comments: comments, Diff: diff, PRNumber: prNumber, PRURL: prURL, PRBody: prBody, Prompt: prompt,
-		CommitSHA: commitSHA, ModelName: modelName, PromptTokens: promptTokenCount, CandidateTokens: candidatesTokenCount,
-		TotalTokens: totalTokenCount, GeneratedAt: generatedAt, FileContents: fileContents,
-	})
 }
 
 // SummaryView is one SUMMARY comment with the verdict and suggestions lifted
@@ -996,7 +982,6 @@ func generateReport(in ReportInput) (string, error) {
 		PRURL                string
 		PageTitle            string
 		Heading              string
-		PRBody               template.HTML
 		Description          descriptionView
 		Verdict              string
 		VerdictClass         string
@@ -1023,7 +1008,6 @@ func generateReport(in ReportInput) (string, error) {
 		PinnedAlerts         []AlertView
 		DeterministicAlerts  []AlertView
 		Checks               []CheckRecord
-		RawDiff              string
 		ModelName            string
 		PromptTokenCount     int32
 		CandidatesTokenCount int32
@@ -1038,7 +1022,6 @@ func generateReport(in ReportInput) (string, error) {
 		PRURL:           in.PRURL,
 		PageTitle:       pageTitle,
 		Heading:         heading,
-		PRBody:          description.Full,
 		Description:     description,
 		Verdict:         headline,
 		VerdictClass:    headlineClass,
@@ -1068,7 +1051,6 @@ func generateReport(in ReportInput) (string, error) {
 		PinnedAlerts:         pinnedAlerts,
 		DeterministicAlerts:  alerts,
 		Checks:               in.Checks,
-		RawDiff:              in.Diff,
 		ModelName:            in.ModelName,
 		PromptTokenCount:     in.PromptTokens,
 		CandidatesTokenCount: in.CandidateTokens,
@@ -1113,13 +1095,8 @@ func generateReport(in ReportInput) (string, error) {
 	return buf.String(), nil
 }
 
-// generateContextLines creates context lines around a specific line number for adjacent comments
+// generateContextLines returns the lines around lineNumber for an off-diff finding.
 func generateContextLines(filePath string, lineNumber int, fileContents map[string]string) []ContextLine {
-	return GenerateContextLinesForTest(filePath, lineNumber, fileContents)
-}
-
-// GenerateContextLinesForTest exports the context line generation for testing
-func GenerateContextLinesForTest(filePath string, lineNumber int, fileContents map[string]string) []ContextLine {
 	content, exists := fileContents[filePath]
 	if !exists {
 		return nil

@@ -110,7 +110,7 @@ index 123..456 100644
  }`
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime})
 	assert.NoError(t, err)
 
 	// Should contain general comments section
@@ -175,7 +175,7 @@ func main() {
 	}
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	// Should contain adjacent comments section for comment that can't be displayed inline
@@ -230,7 +230,7 @@ index 123..456 100644
 
 	// Use GenerateReport (no file contents) to simulate adjacent comments disabled
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime})
 	assert.NoError(t, err)
 
 	// Without file contents the off-diff finding renders without code
@@ -284,7 +284,7 @@ index 123..456 100644
  }`
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	// Should contain adjacent section with context lines using diff-file structure
@@ -330,7 +330,7 @@ index 123..456 100644
 	prompt := "Review this code:\n<script type=\"text/javascript\">PROMPT_XSS()</script>\n$('#token_table')"
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 1, "https://github.com/acme/example/pull/1", prBody, prompt, "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 1, PRURL: "https://github.com/acme/example/pull/1", PRBody: prBody, Prompt: prompt, CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	// No injected payload may appear as a live element/handler anywhere.
@@ -379,7 +379,7 @@ func TestGenerateContextLines_EscapesContent(t *testing.T) {
 		"x.js": "line one\n<script>alert(1)</script>\nline three\n",
 	}
 
-	lines := GenerateContextLinesForTest("x.js", 2, fileContents)
+	lines := generateContextLines("x.js", 2, fileContents)
 	if assert.NotEmpty(t, lines) {
 		var joined string
 		for _, l := range lines {
@@ -416,7 +416,7 @@ index 123..456 100644
  	also_keep = 2`
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime})
 	assert.NoError(t, err)
 
 	occurrences := strings.Count(report, "<p>Mechanical alert — task payload contract changed.</p>")
@@ -447,7 +447,7 @@ index 123..456 100644
 
 	fileContents := map[string]string{"other.py": "line one\nline two\n"}
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	adjacentIdx := strings.Index(report, "adjacent-section")
@@ -478,7 +478,7 @@ index 123..456 100644
 
 	fileContents := map[string]string{"other.go": "package other\n\nfunc f() {}\n"}
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", PRBody: "Test PR body", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	assert.Equal(t, 5, strings.Count(report, `aria-label="Copy link to this comment"`),
@@ -769,7 +769,7 @@ func TestGenerateReport_FindingsIndexOmitsEmptyGroups(t *testing.T) {
 
 func TestGenerateReport_DetailedCommentCarriesStatusPill(t *testing.T) {
 	report := renderLayoutFixture(t, layoutFixtureInput())
-	markup := report[:strings.Index(report, "const GEMINI_API_KEY")]
+	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
 	assert.Equal(t, 2, strings.Count(markup, "FIRST PASS · UNVERIFIED"), "index row plus detailed comment")
 	assert.Equal(t, 2, strings.Count(markup, "CARRIED · UNVERIFIED"))
 	assert.Equal(t, 2, strings.Count(markup, ">MECHANICAL<"))
@@ -916,7 +916,7 @@ index 123..456 100644
 +	// New line
  }`
 	fileContents := map[string]string{"other.go": "package other\n\nfunc f() {}\n"}
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "", "", "abc1234", "gemini-pro", 0, 0, 0, time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC), fileContents)
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 123, PRURL: "https://github.com/test-owner/test-repo/pull/123", CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC), FileContents: fileContents})
 	assert.NoError(t, err)
 
 	pills := map[string]int{}
