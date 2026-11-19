@@ -14,7 +14,7 @@
                 {{range $fileComments}}
                 <div class="comment-body">
                     {{template "comment-counter" .}}
-                    {{.CommentBody | markdownify}}
+                    {{template "finding-body" .}}
                     {{template "counterargument" .}}
                     {{template "verification-note" .}}
                 </div>
@@ -37,7 +37,7 @@
                 {{range $comments}}
                 <div class="comment-body">
                     {{template "comment-counter" .}}
-                    {{.CommentBody | markdownify}}
+                    {{template "finding-body" .}}
                     {{template "counterargument" .}}
                     {{template "verification-note" .}}
                 </div>
