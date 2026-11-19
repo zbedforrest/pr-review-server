@@ -124,3 +124,24 @@ func TestGenerateReport_RendersAFindingOnADeletedLineNumber(t *testing.T) {
 	assert.Contains(t, report, `id="finding-1"`)
 	assert.Contains(t, report, "Removing Three breaks the caller in b.go.")
 }
+
+func TestGenerateReport_LeadsWithTheRewriteGitHubShows(t *testing.T) {
+	cond, expected := "Call Save with a full disk.", "Handle returns nil."
+	contract := &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact",
+		CurrentImpact: "Failed writes report success today.", Falsifiability: "falsifiable",
+		FalsifiableCondition: &cond, ExpectedObservable: &expected, Uncertainty: "Only checked the disk path.",
+		SeverityRationale: "Data loss.", Subjects: []types.FindingSubject{{Kind: "symbol", Path: "a.go", Name: "Handle"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{{FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", CommentBody: "The original long-winded claim.",
+			FindingContract: contract, Display: &types.Display{Title: "Save errors are swallowed", Body: "A failed Save returns nil to the caller."}}},
+	})
+	require.NoError(t, err)
+	title := strings.Index(report, `<div class="finding-display-title">Save errors are swallowed</div>`)
+	original := strings.Index(report, "The original long-winded claim.")
+	require.Positive(t, title)
+	assert.Greater(t, original, title)
+	assert.Contains(t, report, "A failed Save returns nil to the caller.")
+	assert.Contains(t, report, "Failed writes report success today.")
+	assert.Contains(t, report, "Call Save with a full disk. Expected: Handle returns nil.")
+}

@@ -58,7 +58,46 @@ type CommentView struct {
 	AnchorID     string        // "finding-<counter>", the target of the findings-index link
 	StatusPill   string        // "" for confirmed findings
 	StatusClass  string
+	// DisplayTitle and DisplayBody are the rewrite GitHub shows in place of
+	// the original body; empty when no rewrite ran.
+	DisplayTitle string
+	DisplayBody  string
+	Detail       FindingDetail
 	VerifyMark
+}
+
+// FindingDetail is the finding contract's context that GitHub folds under an
+// inline comment.
+type FindingDetail struct {
+	Impact          string
+	Uncertainty     string
+	VerifyCondition string
+	VerifyExpected  string
+}
+
+// HasDetail reports whether the contract said anything worth folding in.
+func (v CommentView) HasDetail() bool {
+	return v.Detail != FindingDetail{}
+}
+
+// displayOf is the rewrite GitHub posts for c, or nil when it has none.
+func displayOf(c types.LineComment) *types.Display {
+	if c.Display == nil || strings.TrimSpace(c.Display.Title) == "" || strings.TrimSpace(c.Display.Body) == "" {
+		return nil
+	}
+	return c.Display
+}
+
+func findingDetail(c *types.FindingContract) FindingDetail {
+	if c == nil || types.ContractStatus(c) != "valid" {
+		return FindingDetail{}
+	}
+	d := FindingDetail{Impact: strings.TrimSpace(c.CurrentImpact), Uncertainty: strings.TrimSpace(c.Uncertainty)}
+	if c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
+		d.VerifyCondition = strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
+		d.VerifyExpected = strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+	}
+	return d
 }
 
 // ShowsSeverity is false for the summary and check entries, whose headers
@@ -481,9 +520,13 @@ func truncateWords(s string, max int) string {
 	return strings.TrimRight(string(runes[:cut]), " \t\n.,;:") + "..."
 }
 
-// findingTitle is the one-line title for the findings index: the contract
-// headline when set, else the first sentence of the body.
+// findingTitle is the one-line title for the findings index: the rewrite's
+// title when GitHub shows one, the contract headline when set, else the first
+// sentence of the body.
 func findingTitle(c types.LineComment) string {
+	if d := displayOf(c); d != nil {
+		return truncateWords(strings.TrimSpace(d.Title), findingTitleRunes)
+	}
 	if c.FindingContract != nil && strings.TrimSpace(c.FindingContract.Headline) != "" {
 		return truncateWords(strings.TrimSpace(c.FindingContract.Headline), findingTitleRunes)
 	}
@@ -793,6 +836,10 @@ func generateReport(in ReportInput) (string, error) {
 			Total:       totalComments,
 		}
 		view.CommentBody = payload.StripProvenanceNote(comment.CommentBody)
+		if d := displayOf(comment); d != nil {
+			view.DisplayTitle, view.DisplayBody = strings.TrimSpace(d.Title), strings.TrimSpace(d.Body)
+		}
+		view.Detail = findingDetail(comment.FindingContract)
 
 		if comment.FilePath == "SUMMARY" {
 			// Only the first SUMMARY feeds the verdict and suggestions blocks;
