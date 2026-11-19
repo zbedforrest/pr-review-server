@@ -613,6 +613,9 @@ type ReportInput struct {
 	// run changed from that profile. Empty Profile renders no profile line.
 	Profile           string
 	ProfileDeviations []string
+	// Withhold reports whether the publisher keeps a finding off the PR; such
+	// findings are left out of the page entirely and only counted. Nil keeps all.
+	Withhold func(types.LineComment) bool
 }
 
 // GenerateReportFrom renders the review report from a ReportInput.
@@ -649,6 +652,24 @@ func verdictClass(verdict string) string {
 		return "approve"
 	}
 	return "neutral"
+}
+
+// withheldOut drops the active findings the publisher keeps off the PR and
+// returns how many it dropped. Summaries and inactive records are kept.
+func withheldOut(comments []types.LineComment, withhold func(types.LineComment) bool) ([]types.LineComment, int) {
+	if withhold == nil {
+		return comments, 0
+	}
+	kept := make([]types.LineComment, 0, len(comments))
+	n := 0
+	for _, c := range comments {
+		if !c.Inactive && c.FilePath != "SUMMARY" && withhold(c) {
+			n++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, n
 }
 
 // splitRecords separates the comments the review asserts from the inactive
@@ -720,7 +741,8 @@ func generateReport(in ReportInput) (string, error) {
 	var summaries []SummaryView
 	var generalComments []CommentView
 	var adjacentComments []CommentView
-	activeComments, records := splitRecords(in.Comments)
+	shown, withheld := withheldOut(in.Comments, in.Withhold)
+	activeComments, records := splitRecords(shown)
 	totalComments := len(activeComments)
 
 	verdict, upshot, suggestions := "", "", ""
@@ -850,7 +872,7 @@ func generateReport(in ReportInput) (string, error) {
 		shortCommitSHA = in.CommitSHA[:7]
 	}
 
-	alerts := buildDeterministicAlerts(in.Comments, in.Checks)
+	alerts := buildDeterministicAlerts(shown, in.Checks)
 	var pinnedAlerts []AlertView
 	if surfaceAlertsEnabled() {
 		pinnedAlerts = alerts
@@ -878,6 +900,7 @@ func generateReport(in ReportInput) (string, error) {
 		UnverifiedCount      int
 		MechanicalCount      int
 		RejectedCount        int
+		WithheldCount        int
 		VerifyCounts         []VerifyCount
 		Suggestions          string
 		FixFirst             []FixFirstItem
@@ -918,6 +941,7 @@ func generateReport(in ReportInput) (string, error) {
 		UnverifiedCount: counts[groupNeedsCheck],
 		MechanicalCount: counts[groupMechanical],
 		RejectedCount:   len(rejected),
+		WithheldCount:   withheld,
 		VerifyCounts:    verifyCounts(verifyMarks, verifyTally),
 		Suggestions:     suggestions,
 		FixFirst:        actions,

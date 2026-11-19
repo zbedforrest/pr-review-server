@@ -70,6 +70,7 @@
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
+            {{if .WithheldCount}}<span class="count-pill count-withheld" title="Verification or publishing hygiene kept these off the PR, so they are not shown here either.">{{.WithheldCount}} withheld</span>{{end}}
         </div>
         {{if .VerifyCounts}}
         <div class="verify-counts">
