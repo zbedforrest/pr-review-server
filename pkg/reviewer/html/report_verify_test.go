@@ -74,3 +74,24 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 		assert.Contains(t, markup, count)
 	}
 }
+
+func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", State: stateConfirmed,
+		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Other is unused.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"F1", "F2"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{summary, refuted, kept},
+		Withhold: func(c types.LineComment) bool { return c.Verification.Suppresses() },
+	})
+	require.NoError(t, err)
+
+	assert.NotContains(t, report, "leaks the session token")
+	assert.NotContains(t, report, "REFUTED")
+	assert.Contains(t, report, "Other is unused.")
+	assert.Contains(t, report, ">1 confirmed</span>")
+	assert.Contains(t, report, ">1 withheld</span>")
+}

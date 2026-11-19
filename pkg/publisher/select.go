@@ -81,7 +81,7 @@ type Policy struct {
 	// the agent did not read off GitHub (PUBLISH_LIBRARY_CLAIM_HOLD, on
 	// unless set to false); RegressionEvidence does the same for a
 	// regression claim that quotes no removed line (PUBLISH_REGRESSION_EVIDENCE).
-	// A held finding stays on the dashboard and keeps its ledger row alive.
+	// A held finding stays in the review data but not the HTML report, and keeps its ledger row alive.
 	LibraryClaimHold   bool
 	RegressionEvidence bool
 	// SettledAlias drops a finding that restates a settled row (dismissed,
