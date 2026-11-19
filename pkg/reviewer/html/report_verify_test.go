@@ -69,7 +69,7 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	markup := report[:strings.Index(report, "const GEMINI_API_KEY")]
+	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
 
 	assert.Equal(t, 3, strings.Count(markup, ">REFUTED</span>"), "index row, detailed comment and its reason note")
 	assert.Equal(t, 2, strings.Count(markup, ">VERIFIED</span>"))
@@ -147,4 +147,16 @@ func TestGenerateReport_LeadsWithTheRewriteGitHubShows(t *testing.T) {
 	assert.Contains(t, report, "A failed Save returns nil to the caller.")
 	assert.Contains(t, report, "Failed writes report success today.")
 	assert.Contains(t, report, "Call Save with a full disk. Expected: Handle returns nil.")
+}
+
+func TestGenerateReport_EmbedsNoChatClientOrDuplicateDiff(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n package a\n+var distinctiveDiffLine = 1\n", PRNumber: 7, PRTitle: "t",
+		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0), Prompt: "the prompt",
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, report, "generativelanguage.googleapis.com")
+	assert.NotContains(t, report, "API_KEY")
+	assert.Equal(t, 1, strings.Count(report, "distinctiveDiffLine"))
+	assert.Contains(t, report, "the prompt")
 }

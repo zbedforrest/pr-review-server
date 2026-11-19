@@ -1,24 +1,8 @@
 {{define "sidebar"}}
 <div id="chat-sidebar" class="chat-sidebar">
-    <div id="chat-handle" class="chat-handle">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-        <span>Chat</span>
-    </div>
     <div id="prompt-handle" class="chat-handle prompt-handle">
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"></path></svg>
         <span>Prompt</span>
-    </div>
-    <div class="chat-content">
-        <h3>Chat with AI</h3>
-        <div id="chat-messages" class="chat-messages">
-            <div class="message assistant">
-                Hello! Ask me anything about this PR, the code, or my review.
-            </div>
-        </div>
-        <div class="chat-input">
-            <textarea id="chat-textarea" placeholder="Type your message..." rows="3"></textarea>
-            <button id="chat-send-btn">Send</button>
-        </div>
     </div>
     <div class="prompt-content" id="prompt-content">
         <h3>PR Prompt</h3>

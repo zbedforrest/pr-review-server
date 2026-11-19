@@ -260,90 +260,25 @@
             gap: 2px;
         }
 
-        .prompt-handle {
-            top: 80px;
-        }
 
-        .chat-content {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            padding: 15px;
-        }
-
-        .chat-content h3, .prompt-content h3 {
+        .prompt-content h3 {
             margin-top: 0;
             text-align: center;
             border-bottom: 1px solid #30363d;
             padding-bottom: 10px;
         }
 
-        .chat-messages {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 10px;
-            background-color: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            display: flex;
-            flex-direction: column;
-        }
 
-        .message {
-            margin-bottom: 15px;
-            padding: 10px;
-            border-radius: 8px;
-            max-width: 90%;
-            word-wrap: break-word;
-        }
 
-        .message.user {
-            background-color: #1f2a50;
-            align-self: flex-end;
-        }
 
-        .message.assistant {
-            background-color: #22272e;
-            align-self: flex-start;
-        }
 
-        .message p {
-            margin: 0;
-        }
 
-        .chat-input {
-            display: flex;
-            flex-direction: column;
-        }
 
-        .chat-input textarea {
-            background-color: #0d1117;
-            color: #c9d1d9;
-            border: 1px solid #30363d;
-            flex-grow: 1;
-            padding: 10px;
-            border-radius: 4px;
-            resize: vertical;
-            margin-bottom: 5px;
-        }
 
-        .chat-input button {
-            padding: 10px 15px;
-            border: none;
-            background-color: #58a6ff;
-            color: #0d1117;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-        }
 
-        .chat-input button:hover {
-            background-color: #80bfff;
-        }
 
         .prompt-content {
-            display: none;
+            display: flex;
             flex-direction: column;
             height: 100%;
             padding: 15px;
@@ -366,7 +301,6 @@
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
 <div class="container" id="report-container">
@@ -388,10 +322,6 @@
     {{template "sidebar" .}}
 
     <script>
-    const GEMINI_API_KEY = "";
-    const RAW_DIFF = `{{ .RawDiff }}`;
-    const PR_BODY = `{{ .PRBody }}`;
-
     document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.comment-body pre code').forEach((block) => {
             hljs.highlightElement(block);
@@ -528,8 +458,7 @@
                 const activeElement = document.activeElement;
                 const chatSidebar = document.getElementById('chat-sidebar');
                 const isTypingInChat = activeElement && (
-                    activeElement.id === 'chat-textarea' ||
-                    (chatSidebar && chatSidebar.contains(activeElement))
+                    chatSidebar && chatSidebar.contains(activeElement)
                 );
 
                 if (!isTypingInChat) {
@@ -549,199 +478,8 @@
             }
         });
 
-        const handle = document.getElementById('chat-handle');
-        const promptHandle = document.getElementById('prompt-handle');
         const sidebar = document.getElementById('chat-sidebar');
-        const sendBtn = document.getElementById('chat-send-btn');
-        const textarea = document.getElementById('chat-textarea');
-        const messagesContainer = document.getElementById('chat-messages');
-        const chatContent = document.querySelector('.chat-content');
-        const promptContent = document.getElementById('prompt-content');
-
-        let currentSidebarView = 'chat';
-
-        function showView(view) {
-            if (view === 'chat') {
-                chatContent.style.display = 'flex';
-                promptContent.style.display = 'none';
-            } else {
-                chatContent.style.display = 'none';
-                promptContent.style.display = 'flex';
-            }
-            currentSidebarView = view;
-        }
-
-        function toggleSidebarTo(view) {
-            const isOpen = sidebar.classList.contains('open');
-            if (isOpen && currentSidebarView === view) {
-                sidebar.classList.remove('open');
-                return;
-            }
-            if (!isOpen) {
-                sidebar.classList.add('open');
-            }
-            showView(view);
-        }
-
-        handle.addEventListener('click', () => toggleSidebarTo('chat'));
-        promptHandle.addEventListener('click', () => toggleSidebarTo('prompt'));
-
-        sendBtn.addEventListener('click', sendMessage);
-        textarea.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        let conversationHistory = [];
-
-        async function sendMessage() {
-            const userInput = textarea.value.trim();
-            if (userInput === '') return;
-
-            appendMessage('user', userInput);
-            textarea.value = '';
-
-            const thinkingMessage = appendMessage('assistant', 'Thinking...');
-
-            try {
-                const fullContext = `
-                    You are a helpful AI assistant integrated into a code review report.
-                    The user is asking for more information about the review, the code, or the PR.
-
-                    Here is the original PR Body:
-                    ---
-                    ${PR_BODY}
-                    ---
-
-                    Here is the full diff of the changes:
-                    ---
-                    ${RAW_DIFF}
-                    ---
-
-                    Here are the initial review comments you provided:
-                    ---
-                    {{ range .Comments }}{{ . }}{{ end }}
-                    ---
-
-                    Here is the conversation history:
-                    ---
-                    ${conversationHistory.map(m => `${m.role}: ${m.parts[0].text}`).join('\n')}
-                    ---
-
-                    Now, please answer the following question from the user.
-                `;
-
-                const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/{{.ModelName}}:streamGenerateContent?key=${GEMINI_API_KEY}`;
-
-                conversationHistory.push({ role: 'user', parts: [{ text: userInput }] });
-
-                const requestBody = {
-                    contents: [
-                        ...conversationHistory,
-                         { role: 'model', parts: [{ text: fullContext }] }
-                    ],
-                };
-
-                const response = await fetch(GEMINI_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(requestBody),
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API request failed: ${response.statusText}`);
-                }
-
-                thinkingMessage.remove();
-                const assistantMessage = appendMessage('assistant', '');
-                const assistantTextElement = assistantMessage.querySelector('p');
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let assistantResponse = '';
-
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) {
-                        break;
-                    }
-
-                    const chunk = decoder.decode(value, { stream: true });
-                    buffer += chunk;
-
-                    let startIndex = 0;
-                    while (startIndex < buffer.length) {
-                        let objectStart = buffer.indexOf('{', startIndex);
-                        if (objectStart === -1) break;
-
-                        let braceCount = 0;
-                        let objectEnd = -1;
-
-                        for (let i = objectStart; i < buffer.length; i++) {
-                            if (buffer[i] === '{') {
-                                braceCount++;
-                            } else if (buffer[i] === '}') {
-                                braceCount--;
-                                if (braceCount === 0) {
-                                    objectEnd = i;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (objectEnd === -1) {
-                            break;
-                        }
-
-                        const jsonStr = buffer.substring(objectStart, objectEnd + 1);
-
-                        try {
-                            const chunk = JSON.parse(jsonStr);
-
-                            if (chunk.candidates && chunk.candidates[0] && chunk.candidates[0].content && chunk.candidates[0].content.parts) {
-                                const text = chunk.candidates[0].content.parts[0].text;
-                                if (text) {
-                                    assistantResponse += text;
-                                    assistantTextElement.textContent = assistantResponse;
-                                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                                }
-                            }
-                        } catch (e) {
-                        }
-
-                        startIndex = objectEnd + 1;
-                    }
-
-                    if (startIndex > 0) {
-                        buffer = buffer.substring(startIndex);
-                    }
-                }
-
-                conversationHistory.push({ role: 'model', parts: [{ text: assistantResponse }] });
-
-            } catch (error) {
-                thinkingMessage.remove();
-                appendMessage('assistant', 'Sorry, I encountered an error. Please check the console for details.');
-            }
-        }
-
-        function appendMessage(role, text) {
-            const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message', role);
-
-            const p = document.createElement('p');
-            p.textContent = text;
-            messageDiv.appendChild(p);
-
-            messagesContainer.appendChild(messageDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            return messageDiv;
-        }
+        document.getElementById('prompt-handle').addEventListener('click', () => sidebar.classList.toggle('open'));
     });
     </script>
   </body>
