@@ -19,7 +19,7 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	p := &Poller{cfg: &config.Config{}, db: database}
-	t.Setenv("publisher.GateEndorsedInlineEnv, "true")
+	t.Setenv(publisher.GateEndorsedInlineEnv, "true")
 
 	finding := func(line int, sev string, v *types.Verification) types.LineComment {
 		return types.LineComment{FilePath: "a.go", LineNumber: line, Importance: sev, State: "confirmed",
