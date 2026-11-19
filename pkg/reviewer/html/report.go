@@ -7,6 +7,7 @@ import (
 	"html"
 	"html/template"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -249,10 +250,26 @@ func verifyCounts(byPill map[string]VerifyMark, counts map[string]int) []VerifyC
 
 // Findings-index groups, in reading order.
 const (
+	groupInline     = "Inline comments on the PR"
+	groupNotes      = "Summary notes"
 	groupConfirmed  = "Confirmed"
 	groupNeedsCheck = "Needs verification"
 	groupMechanical = "Mechanical signals"
 )
+
+var indexGroupOrder = []string{groupInline, groupNotes, groupConfirmed, groupNeedsCheck, groupMechanical}
+
+func severityRank(severity string) int {
+	switch severityClass(severity) {
+	case "critical":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	}
+	return 3
+}
 
 // FindingRow is one line of the findings index.
 type FindingRow struct {
@@ -274,7 +291,13 @@ func (r FindingRow) SeverityClass() string {
 // FindingGroup is one state bucket of the findings index.
 type FindingGroup struct {
 	Name string
+	Hint string
 	Rows []FindingRow
+}
+
+var groupHints = map[string]string{
+	groupInline: "Clear the bar for an inline comment; past the per-PR cap they post as summary bullets instead.",
+	groupNotes:  "Posted folded into the PR summary rather than inline.",
 }
 
 // RecordView is one inactive record in review details: a first-pass claim
@@ -717,8 +740,11 @@ type ReportInput struct {
 // such findings are left out of the page entirely and only counted (nil
 // keeps all). Confidence is the merge confidence the PR summary reports,
 // 0 when unknown.
+// Inline reports whether a finding clears the bar for an inline comment, so
+// the index can split what posts inline from what folds into the summary.
 type PublishView struct {
 	Withhold   func(types.LineComment) bool
+	Inline     func(types.LineComment) bool
 	Confidence int
 }
 
@@ -864,8 +890,8 @@ func generateReport(in ReportInput) (string, error) {
 	var structured *types.SummaryBlock
 	counts := map[string]int{}
 	groups := map[string]*FindingGroup{}
-	for _, name := range []string{groupConfirmed, groupNeedsCheck, groupMechanical} {
-		groups[name] = &FindingGroup{Name: name}
+	for _, name := range indexGroupOrder {
+		groups[name] = &FindingGroup{Name: name, Hint: groupHints[name]}
 	}
 	byID := map[string]CommentView{}
 	anchors := map[string]string{}
@@ -905,6 +931,13 @@ func generateReport(in ReportInput) (string, error) {
 
 		group, pill, class := findingGroupFor(comment)
 		counts[group]++
+		indexGroup := group
+		if group == groupConfirmed && in.Publish.Inline != nil {
+			indexGroup = groupNotes
+			if in.Publish.Inline(comment) {
+				indexGroup = groupInline
+			}
+		}
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
 		view.StatusPill, view.StatusClass = pill, class
 		if showVerification {
@@ -932,7 +965,7 @@ func generateReport(in ReportInput) (string, error) {
 
 		if comment.FilePath == "GENERAL" {
 			generalComments = append(generalComments, view)
-			groups[group].Rows = append(groups[group].Rows, row)
+			groups[indexGroup].Rows = append(groups[indexGroup].Rows, row)
 			continue
 		}
 
@@ -972,12 +1005,13 @@ func generateReport(in ReportInput) (string, error) {
 			}
 			adjacentComments = append(adjacentComments, view)
 		}
-		groups[group].Rows = append(groups[group].Rows, row)
+		groups[indexGroup].Rows = append(groups[indexGroup].Rows, row)
 	}
 
 	var findingGroups []FindingGroup
-	for _, name := range []string{groupConfirmed, groupNeedsCheck, groupMechanical} {
+	for _, name := range indexGroupOrder {
 		if g := groups[name]; len(g.Rows) > 0 {
+			sort.SliceStable(g.Rows, func(i, j int) bool { return severityRank(g.Rows[i].Severity) < severityRank(g.Rows[j].Severity) })
 			findingGroups = append(findingGroups, *g)
 		}
 	}

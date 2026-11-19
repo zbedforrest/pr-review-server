@@ -34,19 +34,20 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 	}
 	pol := p.publishPolicy()
 	pl := payload.Build("", "", 0, "", result.Comments, result.Diff, result.FileContents)
-	held := map[string]bool{}
+	held, inline := map[string]bool{}, map[string]bool{}
 	var posted []payload.Finding
 	for _, f := range pl.Findings {
 		if f.Active && publisher.HoldReason(f, pol) != "" {
 			held[f.ID] = true
 			continue
 		}
+		inline[f.ID] = publisher.Shown(f)
 		posted = append(posted, f)
 	}
+	key := func(c types.LineComment) string { return payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody) }
 	return html.PublishView{
-		Withhold: func(c types.LineComment) bool {
-			return held[payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)]
-		},
+		Withhold:   func(c types.LineComment) bool { return held[key(c)] },
+		Inline:     func(c types.LineComment) bool { return inline[key(c)] },
 		Confidence: publisher.Confidence(posted, result.Checks.ChecksViolated > 0),
 	}
 }

@@ -48,6 +48,8 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	for _, tc := range cases {
 		assert.Equal(t, tc.held, view.Withhold(tc.c), tc.name)
 	}
+	assert.True(t, view.Inline(cases[0].c), "a gate-endorsed finding posts inline")
+	assert.False(t, view.Inline(cases[1].c), "an unverified finding does not")
 	assert.Equal(t, publisher.MergeConfidence(0, 1, false), view.Confidence, "only the endorsed MEDIUM counts; held ones do not")
 
 	t.Setenv(ReportHideWithheldEnv, "off")
