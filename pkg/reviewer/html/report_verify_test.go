@@ -113,3 +113,14 @@ func TestGenerateReport_ShowsNoVerificationPillsWhenNothingWasVerified(t *testin
 	assert.NotContains(t, report, "NOT VERIFIED")
 	assert.NotContains(t, report, "not verified</span>")
 }
+
+func TestGenerateReport_RendersAFindingOnADeletedLineNumber(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,6 +1,2 @@\n package a\n-func One() {}\n-func Two() {}\n-func Three() {}\n-func Four() {}\n+func Five() {}\n"
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{{FilePath: "a.go", LineNumber: 4, Importance: "MEDIUM", CommentBody: "Removing Three breaks the caller in b.go."}},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, report, `id="finding-1"`)
+	assert.Contains(t, report, "Removing Three breaks the caller in b.go.")
+}
