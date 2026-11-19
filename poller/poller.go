@@ -781,12 +781,16 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		modelName = applyAgentUsage(result, agentOut)
 	}
 	result.ReportStages = reportStages(execution.Ensemble, agentOut, modelName)
-	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, p.reportPublishView(result))
+	view := p.reportPublishView(result)
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, view)
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
 	return &ReviewResult{
-		HTMLContent:   htmlContent,
+		HTMLContent: htmlContent,
+		RenderAfterPublish: func(rep *publisher.Report) []byte {
+			return service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, withPublishDecisions(view, rep))
+		},
 		CriticalCount: result.CriticalCount,
 		MediumCount:   result.MediumCount,
 		LowCount:      result.LowCount,
@@ -4250,6 +4254,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 			}
 		}
 	}
+	p.refreshReportAfterPublish(prCtx, pr, reviewResult, published, sidecarBody)
 	confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 	p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
 	p.refreshGreptileStatus(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)

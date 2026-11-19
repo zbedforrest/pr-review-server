@@ -10,6 +10,8 @@ import (
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/html"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -54,4 +56,24 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 
 	t.Setenv(ReportHideWithheldEnv, "off")
 	assert.Nil(t, p.reportPublishView(result).Withhold)
+}
+
+func TestWithPublishDecisionsFollowsWhatTheRoundDid(t *testing.T) {
+	settled := types.LineComment{FilePath: "a.go", LineNumber: 1, CommentBody: "Settled on an earlier PR."}
+	threaded := types.LineComment{FilePath: "a.go", LineNumber: 2, CommentBody: "Has an inline thread."}
+	refuted := types.LineComment{FilePath: "a.go", LineNumber: 3, CommentBody: "Refuted before publishing."}
+	key := func(c types.LineComment) string { return payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody) }
+	before := html.PublishView{Withhold: func(c types.LineComment) bool { return c.CommentBody == refuted.CommentBody }, Confidence: 3}
+	rep := &publisher.Report{Confidence: 4, Decisions: &publisher.Decisions{
+		Dropped: map[string]bool{key(settled): true}, Inline: map[string]bool{key(threaded): true}}}
+
+	after := withPublishDecisions(before, rep)
+	assert.True(t, after.Withhold(settled))
+	assert.True(t, after.Withhold(refuted))
+	assert.False(t, after.Withhold(threaded))
+	assert.True(t, after.Inline(threaded))
+	assert.False(t, after.Inline(settled))
+	assert.Equal(t, 4, after.Confidence)
+
+	assert.Equal(t, 3, withPublishDecisions(before, &publisher.Report{}).Confidence)
 }

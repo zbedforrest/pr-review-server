@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"pr-review-server/pkg/publisher"
 
 	gh "github.com/google/go-github/v57/github"
 
@@ -85,10 +86,13 @@ type ReviewStorage interface {
 // Comments / Diff / FileContents are the structured form used to build the
 // JSON sidecar; they may be nil for mock generators in tests.
 type ReviewResult struct {
-	HTMLContent   []byte
-	CriticalCount int
-	MediumCount   int
-	LowCount      int
+	HTMLContent []byte
+	// RenderAfterPublish re-renders the report with what the publisher did
+	// this round; nil when the review has no publish-aware report.
+	RenderAfterPublish func(*publisher.Report) []byte
+	CriticalCount      int
+	MediumCount        int
+	LowCount           int
 
 	Comments     []types.LineComment
 	Diff         string
