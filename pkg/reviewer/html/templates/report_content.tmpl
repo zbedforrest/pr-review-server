@@ -78,6 +78,7 @@
     <div class="verdict-block" data-verdict="{{.VerdictClass}}">
         <div class="verdict-main">
             <div class="verdict-text">{{.Verdict}}</div>
+            {{if .AgentVerdict}}<div class="verdict-agent">{{.AgentVerdict}}</div>{{end}}
             {{if .Upshot}}<div class="verdict-upshot">{{.Upshot}}</div>{{end}}
         </div>
         <div class="verdict-counts">

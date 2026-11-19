@@ -685,9 +685,17 @@ type ReportInput struct {
 	// run changed from that profile. Empty Profile renders no profile line.
 	Profile           string
 	ProfileDeviations []string
-	// Withhold reports whether the publisher keeps a finding off the PR; such
-	// findings are left out of the page entirely and only counted. Nil keeps all.
-	Withhold func(types.LineComment) bool
+	Publish           PublishView
+}
+
+// PublishView is what the publisher will make of the review, worked out
+// before it posts. Withhold reports whether it keeps a finding off the PR;
+// such findings are left out of the page entirely and only counted (nil
+// keeps all). Confidence is the merge confidence the PR summary reports,
+// 0 when unknown.
+type PublishView struct {
+	Withhold   func(types.LineComment) bool
+	Confidence int
 }
 
 // GenerateReportFrom renders the review report from a ReportInput.
@@ -742,6 +750,18 @@ func withheldOut(comments []types.LineComment, withhold func(types.LineComment) 
 		kept = append(kept, c)
 	}
 	return kept, n
+}
+
+// confidenceClass colors the verdict block by merge confidence the way the
+// summary's score reads: 4 or 5 is mergeable, 1 or 2 blocks.
+func confidenceClass(confidence int) string {
+	switch {
+	case confidence >= 4:
+		return "approve"
+	case confidence <= 2:
+		return "changes"
+	}
+	return "neutral"
 }
 
 // splitRecords separates the comments the review asserts from the inactive
@@ -813,7 +833,7 @@ func generateReport(in ReportInput) (string, error) {
 	var summaries []SummaryView
 	var generalComments []CommentView
 	var adjacentComments []CommentView
-	shown, withheld := withheldOut(in.Comments, in.Withhold)
+	shown, withheld := withheldOut(in.Comments, in.Publish.Withhold)
 	activeComments, records := splitRecords(shown)
 	totalComments := len(activeComments)
 
@@ -942,6 +962,10 @@ func generateReport(in ReportInput) (string, error) {
 	if verdict == "" {
 		verdict = "Verdict: unavailable"
 	}
+	headline, headlineClass, agentVerdict := verdict, verdictClass(verdict), ""
+	if c := in.Publish.Confidence; c > 0 {
+		headline, headlineClass, agentVerdict = fmt.Sprintf("Merge confidence %d/5", c), confidenceClass(c), "Reviewer's "+strings.ToLower(verdict[:1])+verdict[1:]
+	}
 	var actions []FixFirstItem
 	if structured != nil {
 		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical])
@@ -976,6 +1000,7 @@ func generateReport(in ReportInput) (string, error) {
 		Description          descriptionView
 		Verdict              string
 		VerdictClass         string
+		AgentVerdict         string
 		Upshot               string
 		ConfirmedCount       int
 		UnverifiedCount      int
@@ -1015,8 +1040,9 @@ func generateReport(in ReportInput) (string, error) {
 		Heading:         heading,
 		PRBody:          description.Full,
 		Description:     description,
-		Verdict:         verdict,
-		VerdictClass:    verdictClass(verdict),
+		Verdict:         headline,
+		VerdictClass:    headlineClass,
+		AgentVerdict:    agentVerdict,
 		Upshot:          upshot,
 		ConfirmedCount:  counts[groupConfirmed],
 		UnverifiedCount: counts[groupNeedsCheck],
