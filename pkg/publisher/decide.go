@@ -231,6 +231,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		log.Printf("[PUBLISH] %s/%s#%d: review scope has no merge-base; no fixed, return or severity transition this round", r.Owner, r.Repo, r.Number)
 	}
 
+	handed := findingIDs(r.Findings)
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
 	rememberSettled(&r, rows)
@@ -470,6 +471,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	for id, cid := range postedThisRound {
 		r.InlineComments[id] = cid
 	}
+	rep.Decisions = roundDecisions(handed, originalIDs, r, held)
 	summaryLedger, err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep)
 	if err != nil {
 		return rep, err
@@ -1145,4 +1147,42 @@ func backfilled(row *db.PublishedFinding, prior PriorComment) (*db.PublishedFind
 	next := *row
 	next.CommentText = StripRendered(prior.Text)
 	return &next, true
+}
+
+func findingIDs(findings []payload.Finding) []string {
+	ids := make([]string, 0, len(findings))
+	for _, f := range findings {
+		ids = append(ids, f.ID)
+	}
+	return ids
+}
+
+// roundDecisions maps the round's surviving findings back to the ids they
+// arrived with: an id that survives neither as itself nor through an alias,
+// and was not held, reached no surface.
+func roundDecisions(handed []string, originalIDs map[string]string, r Round, held map[string]payload.Finding) *Decisions {
+	d := &Decisions{Dropped: map[string]bool{}, Inline: map[string]bool{}}
+	surviving := map[string]bool{}
+	for _, f := range r.Findings {
+		id := f.ID
+		if from := originalIDs[f.ID]; from != "" {
+			id = from
+		}
+		surviving[id] = true
+		if cid := r.InlineComments[f.ID]; cid != 0 {
+			d.Inline[id] = true
+		}
+	}
+	for _, f := range held {
+		surviving[f.ID] = true
+		if from := originalIDs[f.ID]; from != "" {
+			surviving[from] = true
+		}
+	}
+	for _, id := range handed {
+		if !surviving[id] {
+			d.Dropped[id] = true
+		}
+	}
+	return d
 }

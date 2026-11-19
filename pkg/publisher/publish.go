@@ -129,6 +129,19 @@ type Report struct {
 	// author settled their point on an earlier pull request of the repo,
 	// or in another reviewer's thread on this one.
 	CrossPRSettled int
+	// Decisions is what the round did with each finding it was handed,
+	// keyed by the finding's own id (before ledger aliasing). Ledger
+	// policy only; nil otherwise.
+	Decisions *Decisions
+}
+
+// Decisions splits a round's findings by outcome for the HTML report.
+// Dropped holds the findings that reached no surface this round (settled,
+// deduped against a terminal row or another reviewer's thread, covered by
+// the PR body); Inline the ones that have an inline thread.
+type Decisions struct {
+	Dropped map[string]bool
+	Inline  map[string]bool
 }
 
 const summaryFingerprint = "summary"
