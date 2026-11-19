@@ -858,8 +858,10 @@ func generateReport(in ReportInput) (string, error) {
 				canDisplayInline = true
 				break
 			}
+			// Comments render under new-side lines only, so a match on a
+			// deleted line alone goes to the adjacent section instead.
 			for _, line := range diffFile.Lines {
-				if line.NewLineNumber == comment.LineNumber || line.OldLineNumber == comment.LineNumber {
+				if line.NewLineNumber == comment.LineNumber {
 					canDisplayInline = true
 					break
 				}
