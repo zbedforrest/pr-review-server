@@ -656,6 +656,32 @@ type CheckRecord struct {
 	Unresolved       bool
 }
 
+// StageRecord is one pipeline stage in the generation block: what ran, on
+// which model, and what it cost.
+type StageRecord struct {
+	Name       string
+	Model      string
+	Detail     string
+	CostUSD    float64
+	DurationMS int64
+}
+
+// Cost is the stage's spend for display, "" when none was reported.
+func (s StageRecord) Cost() string {
+	if s.CostUSD <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", s.CostUSD)
+}
+
+// Duration is the stage's wall time for display, "" when unknown.
+func (s StageRecord) Duration() string {
+	if s.DurationMS <= 0 {
+		return ""
+	}
+	return (time.Duration(s.DurationMS) * time.Millisecond).Round(time.Second).String()
+}
+
 // ReportInput is everything the report renders. Structured fields (title,
 // check records, per-finding provenance) replace what used to be scraped out
 // of the SUMMARY prose.
@@ -680,7 +706,10 @@ type ReportInput struct {
 	// run changed from that profile. Empty Profile renders no profile line.
 	Profile           string
 	ProfileDeviations []string
-	Publish           PublishView
+	// Stages lists the pipeline stages that ran; empty renders the single
+	// model and token counts instead.
+	Stages  []StageRecord
+	Publish PublishView
 }
 
 // PublishView is what the publisher will make of the review, worked out
@@ -748,6 +777,14 @@ func confidenceClass(confidence int) string {
 		return "changes"
 	}
 	return "neutral"
+}
+
+func stagesCost(stages []StageRecord) string {
+	total := 0.0
+	for _, s := range stages {
+		total += s.CostUSD
+	}
+	return StageRecord{CostUSD: total}.Cost()
 }
 
 // splitRecords separates the comments the review asserts from the inactive
@@ -1017,6 +1054,8 @@ func generateReport(in ReportInput) (string, error) {
 		ShortCommitSHA       string
 		Profile              string
 		ProfileDeviations    string
+		Stages               []StageRecord
+		StagesCost           string
 	}{
 		PRNumber:        in.PRNumber,
 		PRURL:           in.PRURL,
@@ -1060,6 +1099,8 @@ func generateReport(in ReportInput) (string, error) {
 		ShortCommitSHA:       shortCommitSHA,
 		Profile:              in.Profile,
 		ProfileDeviations:    strings.Join(in.ProfileDeviations, ", "),
+		Stages:               in.Stages,
+		StagesCost:           stagesCost(in.Stages),
 	}
 
 	funcMap := template.FuncMap{

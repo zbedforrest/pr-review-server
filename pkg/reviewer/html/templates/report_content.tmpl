@@ -252,8 +252,19 @@
         </div>
         {{end}}
         <h3>Generation</h3>
+        {{if .Stages}}
+        <table class="stage-table">
+            <thead><tr><th>Stage</th><th>Model</th><th>Result</th><th>Time</th><th>Cost</th></tr></thead>
+            <tbody>
+            {{range .Stages}}<tr><td>{{.Name}}</td><td>{{.Model}}</td><td>{{.Detail}}</td><td>{{.Duration}}</td><td>{{.Cost}}</td></tr>
+            {{end}}
+            </tbody>
+            {{if .StagesCost}}<tfoot><tr><td colspan="4">Total</td><td>{{.StagesCost}}</td></tr></tfoot>{{end}}
+        </table>
+        {{else}}
         <p class="generation-meta">Model: {{.ModelName}}</p>
-        <p class="generation-meta">Prompt tokens: {{.PromptTokenCount}} · Candidate tokens: {{.CandidatesTokenCount}} · Total tokens (all requests): {{.TotalTokenCount}}</p>
+        <p class="generation-meta">Input tokens: {{.PromptTokenCount}} · Output tokens: {{.CandidatesTokenCount}}</p>
+        {{end}}
         <p class="generation-meta">The full prompt is available from the Prompt handle on the right edge of the page.</p>
     </details>
 {{end}}

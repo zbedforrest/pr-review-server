@@ -592,7 +592,7 @@ func TestGenerateReport_TitleInHeaderAndPageTitle(t *testing.T) {
 	assert.NotContains(t, report[:detailsIdx], "Token", "token usage leaves the header")
 	assert.NotContains(t, report[:detailsIdx], "model-x", "model name is not visible above review details")
 	assert.Contains(t, report[detailsIdx:], "model-x")
-	assert.Contains(t, report[detailsIdx:], "120")
+	assert.Contains(t, report[detailsIdx:], "Input tokens: 100 · Output tokens: 20")
 }
 
 func TestGenerateReport_TitleFallbackWhenEmpty(t *testing.T) {
