@@ -9,6 +9,7 @@ import (
 
 	"pr-review-server/config"
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -18,6 +19,7 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	p := &Poller{cfg: &config.Config{}, db: database}
+	t.Setenv("publisher.GateEndorsedInlineEnv, "true")
 
 	finding := func(line int, sev string, v *types.Verification) types.LineComment {
 		return types.LineComment{FilePath: "a.go", LineNumber: line, Importance: sev, State: "confirmed",
@@ -28,7 +30,7 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 		c    types.LineComment
 		held bool
 	}{
-		{"kept", finding(1, "MEDIUM", &types.Verification{Status: types.VerifyKeep, Applied: true}), false},
+		{"kept and graded good", finding(1, "MEDIUM", &types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "GOOD", GateApplied: true}), false},
 		{"unverified by anyone", finding(2, "MEDIUM", nil), false},
 		{"refuted", finding(3, "MEDIUM", &types.Verification{Status: types.VerifyDrop, Applied: true}), true},
 		{"refuted in shadow", finding(4, "MEDIUM", &types.Verification{Status: types.VerifyDrop}), false},
@@ -41,12 +43,13 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	for _, tc := range cases {
 		result.Comments = append(result.Comments, tc.c)
 	}
-	withhold := p.reportWithhold(result)
-	require.NotNil(t, withhold)
+	view := p.reportPublishView(result)
+	require.NotNil(t, view.Withhold)
 	for _, tc := range cases {
-		assert.Equal(t, tc.held, withhold(tc.c), tc.name)
+		assert.Equal(t, tc.held, view.Withhold(tc.c), tc.name)
 	}
+	assert.Equal(t, publisher.MergeConfidence(0, 1, false), view.Confidence, "only the endorsed MEDIUM counts; held ones do not")
 
 	t.Setenv(ReportHideWithheldEnv, "off")
-	assert.Nil(t, p.reportWithhold(result))
+	assert.Nil(t, p.reportPublishView(result).Withhold)
 }

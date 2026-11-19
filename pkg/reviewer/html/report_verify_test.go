@@ -90,7 +90,7 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 		Comments: []types.LineComment{summary, refuted, kept},
-		Withhold: func(c types.LineComment) bool { return c.Verification.Suppresses() },
+		Publish:  PublishView{Withhold: func(c types.LineComment) bool { return c.Verification.Suppresses() }, Confidence: 4},
 	})
 	require.NoError(t, err)
 
@@ -99,6 +99,9 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	assert.Contains(t, report, "Other is unused.")
 	assert.Contains(t, report, ">1 confirmed</span>")
 	assert.Contains(t, report, ">1 withheld</span>")
+	assert.Contains(t, report, `<div class="verdict-text">Merge confidence 4/5</div>`)
+	assert.Contains(t, report, `<div class="verdict-agent">Reviewer&#39;s verdict: approve.</div>`)
+	assert.NotContains(t, report, `class="fix-first"`, "Fix first is dropped once it would list every shown finding")
 }
 
 func TestGenerateReport_ShowsNoVerificationPillsWhenNothingWasVerified(t *testing.T) {

@@ -780,7 +780,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	if !execution.Job.Config.Effective.FirstPass.Enabled {
 		modelName = applyAgentUsage(result, agentOut)
 	}
-	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, p.reportWithhold(result))
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, p.reportPublishView(result))
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
@@ -4064,7 +4064,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 		} else {
 			// Legacy HTML report path.
 			applyProfileHeader(result, execution)
-			htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName(), p.reportWithhold(result))
+			htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName(), p.reportPublishView(result))
 			if htmlContent == nil {
 				err = fmt.Errorf("failed to generate HTML content")
 			} else {
