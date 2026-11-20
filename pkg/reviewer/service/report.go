@@ -22,7 +22,7 @@ func GenerateHTMLReportContent(result *ReviewResult, prNumber int, owner string,
 	}
 	report, err := html.GenerateReportFrom(html.ReportInput{
 		Comments: result.Comments, Diff: result.Diff, PRNumber: prNumber, PRURL: prURL, PRTitle: result.PRTitle, PRBody: result.PRBody,
-		Prompt: result.Prompt, CommitSHA: commitSHA, ModelName: modelName, PromptTokens: result.PromptTokenCount,
+		CommitSHA: commitSHA, ModelName: modelName, PromptTokens: result.PromptTokenCount,
 		CandidateTokens: result.CandidatesTokenCount, TotalTokens: result.TotalTokenCount, GeneratedAt: time.Now(),
 		FileContents: result.FileContents, Checks: checks,
 		Profile: result.ProfileTitle, ProfileDeviations: result.ProfileDeviations, Stages: result.ReportStages, Publish: publish,

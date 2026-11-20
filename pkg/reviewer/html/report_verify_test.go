@@ -69,7 +69,7 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
+	markup := report[:strings.Index(report, "<script>")]
 
 	assert.Equal(t, 3, strings.Count(markup, ">REFUTED</span>"), "index row, detailed comment and its reason note")
 	assert.Equal(t, 2, strings.Count(markup, ">VERIFIED</span>"))
@@ -152,13 +152,27 @@ func TestGenerateReport_LeadsWithTheRewriteGitHubShows(t *testing.T) {
 func TestGenerateReport_EmbedsNoChatClientOrDuplicateDiff(t *testing.T) {
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n package a\n+var distinctiveDiffLine = 1\n", PRNumber: 7, PRTitle: "t",
-		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0), Prompt: "the prompt",
+		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 	})
 	require.NoError(t, err)
 	assert.NotContains(t, report, "generativelanguage.googleapis.com")
 	assert.NotContains(t, report, "API_KEY")
 	assert.Equal(t, 1, strings.Count(report, "distinctiveDiffLine"))
-	assert.Contains(t, report, "the prompt")
+	assert.NotContains(t, report, "chat-sidebar")
+	assert.NotContains(t, report, "prompt-handle")
+	assert.NotContains(t, report, "prompt-body")
+	assert.NotContains(t, report, "Prompt handle")
+}
+
+func TestGenerateReport_HighlightsOnlyWhenTheLibraryLoadedAndAfterNavigationIsWired(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	require.NoError(t, err)
+	guard := strings.Index(report, "if (window.hljs) {")
+	require.Positive(t, guard)
+	assert.Equal(t, 1, strings.Count(report, "hljs.highlightElement"))
+	assert.Greater(t, strings.Index(report, "window.hljs.highlightElement"), guard)
+	assert.Greater(t, guard, strings.Index(report, "document.addEventListener('keydown'"))
+	assert.Greater(t, guard, strings.Index(report, "comment.id = `comment-${number}`"))
 }
 
 func TestGenerateReport_ShowsTheCostOfEachStage(t *testing.T) {

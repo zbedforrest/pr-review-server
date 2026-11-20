@@ -327,19 +327,17 @@ index 123..456 100644
  func main() {}`
 
 	prBody := "PR description with injected <script>BODY_XSS()</script> markup"
-	prompt := "Review this code:\n<script type=\"text/javascript\">PROMPT_XSS()</script>\n$('#token_table')"
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 1, PRURL: "https://github.com/acme/example/pull/1", PRBody: prBody, Prompt: prompt, CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 1, PRURL: "https://github.com/acme/example/pull/1", PRBody: prBody, CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	// No injected payload may appear as a live element/handler anywhere.
 	assert.NotContains(t, report, "<script>BODY_XSS()", "PR body script must be sanitized")
 	assert.NotContains(t, report, "<script>CTX_XSS()", "context-line script must be escaped")
-	assert.NotContains(t, report, "<script type=\"text/javascript\">PROMPT_XSS()", "prompt script must be escaped")
 	assert.NotContains(t, report, "<img src=x onerror=", "comment-body event handler must be sanitized")
 
-	// The prompt and context code must survive as escaped, readable text.
+	// The context code must survive as escaped, readable text.
 	assert.Contains(t, report, "&lt;script", "escaped markup should still be visible")
 
 	// And the benign parts of the untrusted input must still render, so we'd
@@ -529,7 +527,6 @@ func layoutFixtureInput() ReportInput {
 		PRURL:        "https://github.com/acme/example/pull/42",
 		PRTitle:      "Add retry to the sync worker",
 		PRBody:       "First paragraph of the description.\n\nSecond paragraph with more detail about the rollout.\n\nThird paragraph.",
-		Prompt:       "review prompt",
 		CommitSHA:    "abc1234def",
 		ModelName:    "model-x",
 		PromptTokens: 100, CandidateTokens: 20, TotalTokens: 120,
@@ -769,7 +766,7 @@ func TestGenerateReport_FindingsIndexOmitsEmptyGroups(t *testing.T) {
 
 func TestGenerateReport_DetailedCommentCarriesStatusPill(t *testing.T) {
 	report := renderLayoutFixture(t, layoutFixtureInput())
-	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
+	markup := report[:strings.Index(report, "<script>")]
 	assert.Equal(t, 2, strings.Count(markup, "FIRST PASS · UNVERIFIED"), "index row plus detailed comment")
 	assert.Equal(t, 2, strings.Count(markup, "CARRIED · UNVERIFIED"))
 	assert.Equal(t, 2, strings.Count(markup, ">MECHANICAL<"))

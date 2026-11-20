@@ -715,7 +715,6 @@ type ReportInput struct {
 	PRURL           string
 	PRTitle         string
 	PRBody          string
-	Prompt          string
 	CommitSHA       string
 	ModelName       string
 	PromptTokens    int32
@@ -1069,7 +1068,6 @@ func generateReport(in ReportInput) (string, error) {
 		Rejected             []RecordView
 		Unexamined           []RecordView
 		Merged               []RecordView
-		Prompt               template.HTML
 		Files                []*DiffFile
 		Comments             map[string]map[int][]CommentView
 		Summaries            []SummaryView
@@ -1111,10 +1109,7 @@ func generateReport(in ReportInput) (string, error) {
 		Rejected:        rejected,
 		Unexamined:      recordViews(records, stateUnverified, anchors),
 		Merged:          recordViews(records, stateMerged, anchors),
-		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
-		// jQuery). It is NOT Markdown: escape it so it renders as literal text
-		// instead of being interpreted as HTML/math. CSS handles line wrapping.
-		Prompt:               template.HTML(html.EscapeString(in.Prompt)),
+
 		Files:                diffFiles,
 		Comments:             commentsByFile,
 		Summaries:            summaries,
