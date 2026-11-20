@@ -341,6 +341,7 @@ type FixFirstItem struct {
 	FilePath   string
 	LineNumber int
 	Title      string
+	order      int
 	VerifyMark
 }
 
@@ -821,15 +822,27 @@ func postedLine(v PublishView, inline, notes int, shortSHA string) string {
 
 const topFindingsShown = 3
 
-// topFindings is the short list under the posted line: the most severe
-// posted findings, dropped when it would repeat the whole index.
+// topFindings is the short list under the posted line: the posted findings
+// above the lowest severity present, most severe first and in page order
+// within a severity. Findings that all share one severity have no top.
 func topFindings(posted []FixFirstItem) []FixFirstItem {
-	if len(posted) <= topFindingsShown {
-		return nil
+	lowest := 0
+	for _, f := range posted {
+		lowest = max(lowest, severityRank(f.Severity))
 	}
-	top := append([]FixFirstItem(nil), posted...)
-	sort.SliceStable(top, func(i, j int) bool { return severityRank(top[i].Severity) < severityRank(top[j].Severity) })
-	return top[:topFindingsShown]
+	var top []FixFirstItem
+	for _, f := range posted {
+		if severityRank(f.Severity) < lowest {
+			top = append(top, f)
+		}
+	}
+	sort.SliceStable(top, func(i, j int) bool {
+		if a, b := severityRank(top[i].Severity), severityRank(top[j].Severity); a != b {
+			return a < b
+		}
+		return top[i].order < top[j].order
+	})
+	return top[:min(len(top), topFindingsShown)]
 }
 
 // idRefs rewrites the reviewer's internal finding labels, which mean nothing
@@ -1149,7 +1162,7 @@ func numberCards(places []cardPlace) (counters []int, total int) {
 }
 
 func fixFirstItem(v CommentView, title string) FixFirstItem {
-	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, VerifyMark: v.VerifyMark}
+	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, order: v.Counter, VerifyMark: v.VerifyMark}
 }
 
 func generateReport(in ReportInput) (string, error) {
