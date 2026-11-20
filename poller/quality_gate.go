@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ type GateReport struct {
 	Grades     map[string]int `json:"grades"`
 	Dropped    int            `json:"dropped"`
 	Demoted    int            `json:"demoted"`
+	Lowered    int            `json:"lowered,omitempty"`
 	CostUSD    float64        `json:"cost_usd"`
 	DurationMS int64          `json:"duration_ms"`
 	Error      string         `json:"error,omitempty"`
@@ -226,6 +228,10 @@ func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.
 			} else {
 				rep.Dropped++
 			}
+		} else if lower := gateLoweredSeverity(g, c.Importance); lower != "" {
+			v.GateLoweredFrom = strings.ToUpper(strings.TrimSpace(c.Importance))
+			c.Importance = lower
+			rep.Lowered++
 		}
 		c.Verification = v
 		comments[index[k]] = c
@@ -276,4 +282,29 @@ func logGate(in service.GradeAgentInput, rep GateReport, items []gateItem) {
 		Items []gateItem `json:"items,omitempty"`
 	}{rep, items})
 	log.Printf("[GATE %s/%s#%d] %s", in.Owner, in.Repo, in.PRNumber, body)
+}
+
+// GateSeverityAdjustEnv lets the gate lower a finding it grades OK as
+// overstated-severity ("true", "1", "on", "yes"); off by default.
+const GateSeverityAdjustEnv = "QUALITY_GATE_SEVERITY_ADJUST"
+
+// gateLoweredSeverity is the severity one step below a finding the gate kept
+// but called overstated, so the pill matches the gate's own note; empty
+// when nothing changes.
+func gateLoweredSeverity(g grader.Grade, importance string) string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(GateSeverityAdjustEnv))) {
+	case "true", "1", "on", "yes":
+	default:
+		return ""
+	}
+	if g.Grade != grader.GradeOK || g.Category != "overstated-severity" {
+		return ""
+	}
+	switch strings.ToUpper(strings.TrimSpace(importance)) {
+	case "CRITICAL":
+		return "MEDIUM"
+	case "MEDIUM":
+		return "LOW"
+	}
+	return ""
 }

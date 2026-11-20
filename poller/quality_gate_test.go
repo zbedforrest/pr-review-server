@@ -190,3 +190,51 @@ func TestGateReasonNamesBatchIDsByLocation(t *testing.T) {
 		t.Fatalf("gateReason = %q, want %q", got, want)
 	}
 }
+
+func overstatedGateFixture(t *testing.T) *gateFixture {
+	t.Helper()
+	f := newGateFixture(t, gateModeOn, "alice", nil, nil)
+	gateRunFn = func(_ context.Context, _ service.AgentConfig, _ service.Spawner, in service.GradeAgentInput) (*service.GradeAgentResult, error) {
+		res := &service.GradeAgentResult{}
+		for _, it := range in.Items {
+			category := "overstated-severity"
+			if it.File == "c.go" {
+				category = "marginal-value"
+			}
+			res.Grades = append(res.Grades, grader.Grade{ID: it.ID, Grade: grader.GradeOK, Category: category, Reason: "r"})
+		}
+		return res, nil
+	}
+	return f
+}
+
+func TestGateLowersAFindingItCallsOverstatedOneStep(t *testing.T) {
+	t.Setenv(GateSeverityAdjustEnv, "on")
+	f := overstatedGateFixture(t)
+	rep := f.run()
+	if rep.Lowered != 2 || rep.Dropped != 0 || rep.Demoted != 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	c := f.review.Comments
+	for i, want := range []struct{ importance, from string }{{"LOW", "MEDIUM"}, {"MEDIUM", "CRITICAL"}, {"MEDIUM", ""}} {
+		if c[i].Importance != want.importance || c[i].Verification.GateLoweredFrom != want.from || c[i].Verification.Suppresses() {
+			t.Errorf("%s: importance %q lowered from %q, want %q from %q", c[i].FilePath, c[i].Importance, c[i].Verification.GateLoweredFrom, want.importance, want.from)
+		}
+	}
+}
+
+func TestGateKeepsSeverityWhenAdjustingIsOff(t *testing.T) {
+	f := overstatedGateFixture(t)
+	rep := f.run()
+	if rep.Lowered != 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	for _, c := range f.review.Comments[:3] {
+		if c.Verification.GateLoweredFrom != "" {
+			t.Errorf("%s lowered with the toggle off", c.FilePath)
+		}
+	}
+	if f.review.Comments[1].Importance != "CRITICAL" {
+		t.Errorf("CRITICAL became %q", f.review.Comments[1].Importance)
+	}
+}
