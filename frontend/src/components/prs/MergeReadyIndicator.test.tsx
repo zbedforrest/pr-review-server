@@ -22,7 +22,6 @@ describe('MergeReadyIndicator', () => {
     render(<MergeReadyIndicator pr={makePR()} />);
     const el = screen.getByRole('img', { name: /^Ready to merge:/ });
     expect(el.textContent?.trim()).toBe('✅');
-    expect(el.getAttribute('title')).toBe(el.getAttribute('aria-label'));
     expect(el.className).toBe('pr-table__merge-ready');
   });
 

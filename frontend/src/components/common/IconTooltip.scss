@@ -1,0 +1,18 @@
+@use '../../styles/abstracts/variables' as *;
+
+.icon-tooltip {
+  position: fixed;
+  z-index: 1100;
+  width: max-content;
+  max-width: 260px;
+  box-sizing: border-box;
+  padding: $spacing-xs $spacing-sm;
+  background: $color-bg-secondary;
+  color: $color-text-primary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-lg;
+  font-size: $font-size-base;
+  line-height: 1.4;
+  pointer-events: none;
+}

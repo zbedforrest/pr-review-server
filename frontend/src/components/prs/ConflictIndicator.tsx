@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { IconTooltip } from '@/components/common/IconTooltip';
 import type { PR } from '@/types/pr';
 
 interface ConflictIndicatorProps {
@@ -10,8 +11,8 @@ export const ConflictIndicator = memo(function ConflictIndicator({ pr }: Conflic
   if (pr.pr_state && pr.pr_state !== 'open') return null;
   const label = 'Merge conflicts with the base branch';
   return (
-    <span className="pr-table__conflict" role="img" aria-label={label} title={label}>
+    <IconTooltip label={label} className="pr-table__conflict">
       ⚔️
-    </span>
+    </IconTooltip>
   );
 });
