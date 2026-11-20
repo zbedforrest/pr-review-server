@@ -79,7 +79,16 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	assert.False(t, r.Commentable["pkg/store/sessions.go"][99])
 	assert.Equal(t, previous, r.Previous)
 	assert.Equal(t, "https://prism.example/go/agent?o=acme&r=example&n=7", r.AgentLinkBase)
-	assert.Equal(t, "https://prism.example/api/review/acme/example/7?format=html", r.DashboardURL)
+	assert.Equal(t, "https://prism.example/reviews/acme_example_7_abcdef1.html", r.DashboardURL)
+}
+
+func TestReportLink_FallsBackToTheLatestReview(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abcdef1234567890"}
+	assert.Equal(t, "https://prism.example/api/review/acme/example/7?format=html",
+		reportLink("https://prism.example", github.PullRequest{Owner: "acme", Repo: "example", Number: 7}),
+		"without a head there is no file to pin")
+	t.Setenv(ReportLinkPinnedEnv, "off")
+	assert.Equal(t, "https://prism.example/api/review/acme/example/7?format=html", reportLink("https://prism.example", pr))
 }
 
 func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
