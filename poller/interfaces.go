@@ -88,8 +88,9 @@ type ReviewStorage interface {
 type ReviewResult struct {
 	HTMLContent []byte
 	// RenderAfterPublish re-renders the report with what the publisher did
-	// this round; nil when the review has no publish-aware report.
-	RenderAfterPublish func(*publisher.Report) []byte
+	// this round, or with why it posted nothing; nil when the review has no
+	// publish-aware report.
+	RenderAfterPublish func(rep *publisher.Report, notPublished string) []byte
 	CriticalCount      int
 	MediumCount        int
 	LowCount           int

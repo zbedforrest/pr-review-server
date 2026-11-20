@@ -1,8 +1,8 @@
 {{/* Shared counter row for every review comment. The text is a placeholder:
      layout.tmpl rewrites it at load time so the numbering follows document
      order (which is what the deep links and the J/K navigation both key off).
-     The button copies a #comment-N link to this comment. The finding anchor
-     lives here, not on the comment container, because the load-time script
+     The button copies this comment's #finding-N link (#comment-N when it has
+     no finding anchor). The finding anchor lives here, not on the comment container, because the load-time script
      overwrites the container's id. */}}
 {{define "comment-counter"}}
 <div class="comment-counter"{{if .AnchorID}} id="{{.AnchorID}}"{{end}}>

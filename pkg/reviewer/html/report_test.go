@@ -600,19 +600,17 @@ index 123..456 100644
  func main() {}`
 
 	prBody := "PR description with injected <script>BODY_XSS()</script> markup"
-	prompt := "Review this code:\n<script type=\"text/javascript\">PROMPT_XSS()</script>\n$('#token_table')"
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 1, PRURL: "https://github.com/acme/example/pull/1", PRBody: prBody, Prompt: prompt, CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
+	report, err := GenerateReportFrom(ReportInput{Comments: comments, Diff: diff, PRNumber: 1, PRURL: "https://github.com/acme/example/pull/1", PRBody: prBody, CommitSHA: "abc1234", ModelName: "gemini-pro", GeneratedAt: testTime, FileContents: fileContents})
 	assert.NoError(t, err)
 
 	// No injected payload may appear as a live element/handler anywhere.
 	assert.NotContains(t, report, "<script>BODY_XSS()", "PR body script must be sanitized")
 	assert.NotContains(t, report, "<script>CTX_XSS()", "context-line script must be escaped")
-	assert.NotContains(t, report, "<script type=\"text/javascript\">PROMPT_XSS()", "prompt script must be escaped")
 	assert.NotContains(t, report, "<img src=x onerror=", "comment-body event handler must be sanitized")
 
-	// The prompt and context code must survive as escaped, readable text.
+	// The context code must survive as escaped, readable text.
 	assert.Contains(t, report, "&lt;script", "escaped markup should still be visible")
 
 	// And the benign parts of the untrusted input must still render, so we'd
@@ -856,7 +854,6 @@ func layoutFixtureInput() ReportInput {
 		PRURL:        "https://github.com/acme/example/pull/42",
 		PRTitle:      "Add retry to the sync worker",
 		PRBody:       "First paragraph of the description.\n\nSecond paragraph with more detail about the rollout.\n\nThird paragraph.",
-		Prompt:       "review prompt",
 		CommitSHA:    "abc1234def",
 		ModelName:    "model-x",
 		PromptTokens: 100, CandidateTokens: 20, TotalTokens: 120,
@@ -1054,25 +1051,26 @@ func TestGenerateReport_FindingsIndexGroupsByProvenance(t *testing.T) {
 	assert.Less(t, idx[1], idx[2])
 
 	confirmed := index[idx[0]:idx[1]]
-	assert.Contains(t, confirmed, `href="#finding-1"`)
+	assert.Contains(t, confirmed, `href="#finding-4"`)
 	assert.Contains(t, confirmed, "app.go:13")
 	assert.Contains(t, confirmed, "Nil dereference when the config is missing.")
 	assert.NotContains(t, confirmed, "The handler reads")
-	assert.Contains(t, confirmed, `href="#finding-5"`)
+	assert.Contains(t, confirmed, `href="#finding-6"`)
 	assert.NotContains(t, confirmed, "UNVERIFIED")
 
 	needs := index[idx[1]:idx[2]]
-	assert.Contains(t, needs, `href="#finding-2"`)
+	assert.Contains(t, needs, `href="#finding-3"`)
 	assert.Contains(t, needs, "Retry loop has no backoff")
 	assert.Contains(t, needs, "FIRST PASS · UNVERIFIED")
-	assert.Contains(t, needs, `href="#finding-3"`)
+	assert.Contains(t, needs, `href="#finding-2"`)
+	assert.Less(t, strings.Index(needs, "GENERAL"), strings.Index(needs, "Retry loop has no backoff"), "rows follow the page, where general comments come first")
 	assert.Contains(t, needs, "CARRIED · UNVERIFIED")
 	assert.Contains(t, needs, "GENERAL")
 	assert.NotContains(t, needs, "production environments", "long title truncated on a word boundary")
 	assert.Contains(t, needs, "...")
 
 	mech := index[idx[2]:]
-	assert.Contains(t, mech, `href="#finding-4"`)
+	assert.Contains(t, mech, `href="#finding-5"`)
 	assert.Contains(t, mech, ">MECHANICAL<")
 	assert.Contains(t, mech, "Mechanical alert: task payload contract changed.")
 
@@ -1080,7 +1078,8 @@ func TestGenerateReport_FindingsIndexGroupsByProvenance(t *testing.T) {
 	assert.Contains(t, index, `class="sev-pill sev-medium"`)
 	assert.Contains(t, index, `class="sev-pill sev-low"`)
 
-	for _, id := range []string{"finding-1", "finding-2", "finding-3", "finding-4", "finding-5"} {
+	assert.NotContains(t, report, `id="finding-1"`, "the summary card takes the first number")
+	for _, id := range []string{"finding-2", "finding-3", "finding-4", "finding-5", "finding-6"} {
 		assert.Equal(t, 1, strings.Count(report, `id="`+id+`"`), "anchor %s should exist exactly once", id)
 	}
 }
@@ -1096,7 +1095,7 @@ func TestGenerateReport_FindingsIndexOmitsEmptyGroups(t *testing.T) {
 
 func TestGenerateReport_DetailedCommentCarriesStatusPill(t *testing.T) {
 	report := renderLayoutFixture(t, layoutFixtureInput())
-	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
+	markup := report[:strings.Index(report, "<script>")]
 	assert.Equal(t, 2, strings.Count(markup, "FIRST PASS · UNVERIFIED"), "index row plus detailed comment")
 	assert.Equal(t, 2, strings.Count(markup, "CARRIED · UNVERIFIED"))
 	assert.Equal(t, 2, strings.Count(markup, ">MECHANICAL<"))
@@ -1249,7 +1248,7 @@ index 123..456 100644
 	pills := map[string]int{}
 	for _, counter := range strings.Split(report, `class="comment-counter"`)[1:] {
 		header := counter[:strings.Index(counter, "comment-link-btn")]
-		if strings.Contains(header, "Comment 4 of 6") {
+		if strings.Contains(header, "Comment 1 of 6") {
 			assert.NotContains(t, header, "sev-pill", "the summary carries no severity even when one is stored")
 			continue
 		}
@@ -1458,4 +1457,45 @@ func TestPlanFiles_BudgetKeepsCommentedFilesAndDropsLaterUncommentedOnes(t *test
 	assert.Equal(t, map[string]string{
 		"a.go": fileSkipped, "b.go": fileSkipped, "c.go": fileOpen, "d.go": fileSkipped, "e.go": fileOpen,
 	}, fileModes(planFiles(files, comments, 100)))
+}
+
+func TestBuildDescription_PreviewSkipsTemplateHeadingsAndComments(t *testing.T) {
+	body := "## Ticket\n\n<!-- paste the ticket id\nhere -->\n\n## Summary\nNone\n\n## Background\n\nAdds backoff to the sync worker.\n\n## Changes\n\n- worker"
+	view := buildDescription(body)
+	assert.True(t, view.Folded)
+	assert.Equal(t, "<p>Adds backoff to the sync worker.</p>", strings.TrimSpace(string(view.Preview)))
+	assert.Contains(t, string(view.Full), "Ticket")
+
+	assert.Empty(t, firstProseParagraph("## Only\n\n<!-- headings -->\n\n## Here"))
+	assert.Equal(t, "First line.\nSecond line.", firstProseParagraph("First line.\nSecond line.\n\nLater."))
+}
+
+func TestNumberCardsFollowsThePage(t *testing.T) {
+	counters, total := numberCards([]cardPlace{
+		{index: 0, section: sectionAdjacent},
+		{index: 1, section: sectionDiff, file: 1, line: 4},
+		{index: 2, section: sectionDiff, file: 0, line: 30},
+		{index: 3, section: sectionNone},
+		{index: 4, section: sectionDiff, file: 0, line: 0},
+		{index: 5, section: sectionGeneral},
+		{index: 6, section: sectionSummary},
+		{index: 7, section: sectionAdjacent},
+	})
+	assert.Equal(t, 7, total)
+	assert.Equal(t, []int{6, 5, 4, 0, 3, 2, 1, 7}, counters)
+}
+
+func TestGenerateReport_PageChrome(t *testing.T) {
+	in := layoutFixtureInput()
+	in.Comments[0].Verification = &types.Verification{Status: types.VerifyKeep, Applied: true}
+	in.Stages = []StageRecord{{Name: "Review runs", Detail: "5 of 5 runs used"}}
+	report := renderLayoutFixture(t, in)
+
+	assert.Contains(t, report, `has-note" tabindex="0" data-note="The verifier checked the claim against the repository and kept it."`)
+	assert.NotContains(t, report, `title="The verifier`)
+	assert.Contains(t, report, "@media (prefers-color-scheme: light)")
+	assert.Contains(t, report, "@media (max-width: 760px)")
+	assert.Contains(t, report, `class="help-tooltip-close"`)
+	assert.Contains(t, report, "Findings on this page: 5.")
+	assert.Contains(t, report, "anchorIndex[counterDiv.id] = index")
 }

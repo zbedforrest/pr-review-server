@@ -50,9 +50,10 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 	}
 	pol := p.publishPolicy()
 	pl := payload.Build("", "", 0, "", result.Comments, result.Diff, result.FileContents)
-	held, inline := map[string]bool{}, map[string]bool{}
+	held, inline, titles := map[string]bool{}, map[string]bool{}, map[string]string{}
 	var posted []payload.Finding
 	for _, f := range pl.Findings {
+		titles[f.ID] = publisher.TitleOf(f)
 		if f.Active && publisher.HoldReason(f, pol) != "" {
 			held[f.ID] = true
 			continue
@@ -64,8 +65,55 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 	return html.PublishView{
 		Withhold:   func(c types.LineComment) bool { return held[key(c)] },
 		Inline:     func(c types.LineComment) bool { return inline[key(c)] },
+		Title:      func(c types.LineComment) string { return titles[key(c)] },
 		Confidence: publisher.Confidence(posted, result.Checks.ChecksViolated > 0),
 	}
+}
+
+const (
+	notPublishedNotAsked = "this run was not asked to post"
+	notPublishedDraft    = "the pull request is a draft"
+	notPublishedAuthor   = "PRism does not post on this author's pull requests"
+)
+
+// reportPublishViewFor is reportPublishView with what is already known about
+// whether the run will post at all.
+func (p *Poller) reportPublishViewFor(job ReviewJob, result *service.ReviewResult) html.PublishView {
+	view := p.reportPublishView(result)
+	if view.Withhold == nil {
+		return view
+	}
+	switch {
+	case job.SkipPublish:
+		view.NotPublished = notPublishedNotAsked
+	case job.PR.Draft && !p.publishesDraft(job):
+		view.NotPublished = notPublishedDraft
+	default:
+		if gate, err := p.publishGate(); err != nil || !gate.Allowed(job.PR.Author) {
+			view.NotPublished = notPublishedAuthor
+		}
+	}
+	return view
+}
+
+// notPublishedReason words a publication outcome that posted nothing for
+// the report, "" when the round posted.
+func notPublishedReason(outcome string) string {
+	switch {
+	case outcome == "" || outcome == publicationPosted:
+		return ""
+	case outcome == publicationAlreadyPosted:
+		return "an earlier run already posted a review of this commit"
+	case outcome == publicationNotAllowed:
+		return notPublishedAuthor
+	case outcome == publicationMuted:
+		return "the author muted PRism on this pull request"
+	case outcome == publicationUnavailable:
+		return "posting is not set up on this server"
+	case strings.HasPrefix(outcome, publicationSkippedPrefix):
+		return "the " + strings.TrimPrefix(outcome, publicationSkippedPrefix)
+	}
+	return "posting to GitHub failed"
 }
 
 // withPublishDecisions narrows a pre-publish view to what the round actually
@@ -89,13 +137,19 @@ func withPublishDecisions(view html.PublishView, rep *publisher.Report) html.Pub
 }
 
 // refreshReportAfterPublish replaces the canonical report with one rendered
-// from the round's decisions; the immutable run artifact keeps the first
-// render.
-func (p *Poller) refreshReportAfterPublish(ctx context.Context, pr github.PullRequest, rr *ReviewResult, rep *publisher.Report, sidecar []byte) {
-	if !reportPublishDecisions() || rr == nil || rr.RenderAfterPublish == nil || rep == nil || rep.Decisions == nil {
+// from the round's decisions, or from why the round posted nothing; the
+// immutable run artifact keeps the first render.
+func (p *Poller) refreshReportAfterPublish(ctx context.Context, pr github.PullRequest, rr *ReviewResult, rep *publisher.Report, outcome string, sidecar []byte) {
+	if !reportPublishDecisions() || rr == nil || rr.RenderAfterPublish == nil {
 		return
 	}
-	body := rr.RenderAfterPublish(rep)
+	notPublished := ""
+	if rep == nil || rep.Decisions == nil {
+		if notPublished = notPublishedReason(outcome); notPublished == "" {
+			return
+		}
+	}
+	body := rr.RenderAfterPublish(rep, notPublished)
 	if body == nil {
 		return
 	}

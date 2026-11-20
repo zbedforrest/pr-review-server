@@ -102,18 +102,19 @@ func TestGenerateReport_LegacyCommentsWithoutStateStillGroupByProvenance(t *test
 	assert.NotContains(t, index[idx[0]:idx[1]], "GENERAL")
 }
 
-func TestGenerateReport_DisputedFindingShowsCounterargument(t *testing.T) {
+func TestGenerateReport_DisputedFindingListsTheObjectionUnderReviewDetails(t *testing.T) {
 	report := renderLayoutFixture(t, stateFixtureInput())
 	markup := report[:strings.Index(report, "<summary>Review details</summary>")]
-
 	assert.Equal(t, 2, strings.Count(markup, "FIRST PASS · DISPUTED"), "index row plus detailed comment")
-	require.Greater(t, strings.Index(markup, `class="counterargument"`), strings.Index(markup, "Two tenants share one cache entry."), "the counterargument follows the claim body")
-	counter := markup[strings.Index(markup, `class="counterargument"`):]
-	counter = counter[:strings.Index(counter, "</div>")]
-	assert.Contains(t, counter, "Agent rejected:")
-	assert.Contains(t, counter, "The cache key includes the tenant id.")
-	assert.Contains(t, counter, "cache.go:22")
-	assert.Equal(t, 1, strings.Count(markup, `class="counterargument"`), "only the disputed finding carries a counterargument")
+	assert.NotContains(t, markup, "The cache key includes the tenant id.")
+
+	details := detailsSection(t, report)
+	objections := details[strings.Index(details, "<h3>Posted over the reviewer's objection</h3>"):]
+	objections = objections[:strings.Index(objections, "<h3>Required checks</h3>")]
+	assert.Contains(t, objections, `<a class="record-location" href="#finding-7">lib.go:7</a>`)
+	assert.Contains(t, objections, "Reviewer's objection: The cache key includes the tenant id.")
+	assert.Contains(t, objections, "cache.go:22")
+	assert.Equal(t, 1, strings.Count(objections, `class="record-row"`))
 }
 
 func TestGenerateReport_InactiveRecordsExcludedFromCountsAndDetail(t *testing.T) {
@@ -128,9 +129,10 @@ func TestGenerateReport_InactiveRecordsExcludedFromCountsAndDetail(t *testing.T)
 	assert.Contains(t, block, "1 rejected")
 
 	body := report[:strings.Index(report, "<summary>Review details</summary>")]
-	for _, inactive := range []string{"Missing error check on Decode", "Unexamined low claim", "Restated nil dereference"} {
+	for _, inactive := range []string{"Missing error check on Decode", "Unexamined low claim"} {
 		assert.NotContains(t, body, inactive, "inactive records must not render as comments")
 	}
+	assert.Equal(t, 1, strings.Count(body, "Restated nil dereference"), "a merged claim shows once, under the finding that covers it")
 	assert.Contains(t, report, "Comment 1 of 8", "the counter covers active comments only")
 	assert.NotContains(t, report, "of 11")
 }
@@ -154,32 +156,45 @@ func TestGenerateReport_ReviewDetailsListsInactiveRecords(t *testing.T) {
 	details := detailsSection(t, report)
 
 	idx := sectionIndices(t, details,
-		"<h3>Rejected after investigation</h3>",
-		"<h3>First-pass claims not examined</h3>",
-		"<h3>Merged claims</h3>",
+		"<h3>Not posted</h3>",
+		"<h4>Rejected after investigation</h4>",
+		"<h4>First-pass claims not examined</h4>",
+		"<h3>Posted over the reviewer's objection</h3>",
 		"<h3>Required checks</h3>",
 	)
 	for i := 1; i < len(idx); i++ {
 		assert.Greater(t, idx[i], idx[i-1], "record section %d out of order", i)
 	}
 
-	rejected := details[idx[0]:idx[1]]
+	rejected := details[idx[1]:idx[2]]
 	assert.Contains(t, rejected, `class="sev-pill sev-medium"`)
 	assert.Contains(t, rejected, "api.go:8")
 	assert.Contains(t, rejected, "Missing error check on Decode.")
 	assert.Contains(t, rejected, "Rejected because: Decode errors are handled by the caller.")
 	assert.Contains(t, rejected, "api.go:30")
 
-	unexamined := details[idx[1]:idx[2]]
+	unexamined := details[idx[2]:idx[3]]
 	assert.Contains(t, unexamined, `class="sev-pill sev-low"`)
 	assert.Contains(t, unexamined, "util.go:3")
 	assert.Contains(t, unexamined, "Unexamined low claim about naming.")
 
-	merged := details[idx[2]:idx[3]]
-	assert.Contains(t, merged, "app.go:13")
-	assert.Contains(t, merged, "Restated nil dereference claim.")
-	assert.Contains(t, merged, "folded into")
-	assert.Contains(t, merged, `href="#finding-1"`)
+	assert.NotContains(t, details, "Merged claims")
+	assert.NotContains(t, details, "Restated nil dereference claim.")
+}
+
+func TestGenerateReport_MergedClaimShowsUnderTheFindingThatCoversIt(t *testing.T) {
+	in := stateFixtureInput()
+	in.Comments = append(in.Comments, types.LineComment{FilePath: "gone.go", LineNumber: 4, Importance: "CRITICAL", Provenance: "first-pass",
+		State: "merged", Inactive: true, MergedInto: "A-9", CommentBody: "CRITICAL claim folded into a finding that is not shown."})
+	report := renderLayoutFixture(t, in)
+
+	card := report[strings.Index(report, `id="finding-4"`):]
+	card = card[:strings.Index(card, `class="comment-counter"`)]
+	assert.Contains(t, card, `<div class="also-covers">Also covers: Restated nil dereference claim.</div>`)
+	assert.Equal(t, 1, strings.Count(report, `class="also-covers"`))
+	assert.NotContains(t, report, "folded into")
+	assert.NotContains(t, report, "the agent did not link them")
+	assert.NotContains(t, report, "folded into a finding that is not shown")
 }
 
 func TestGenerateReport_ReviewDetailsOmitsEmptyRecordSections(t *testing.T) {
@@ -190,7 +205,7 @@ func TestGenerateReport_ReviewDetailsOmitsEmptyRecordSections(t *testing.T) {
 	assert.NotContains(t, details, "Merged claims")
 }
 
-func TestGenerateReport_StructuredSummaryDrivesVerdictUpshotAndFixFirst(t *testing.T) {
+func TestGenerateReport_UnpublishedViewKeepsTheReviewersUpshotAndFixFirst(t *testing.T) {
 	report := renderLayoutFixture(t, stateFixtureInput())
 	start := strings.Index(report, `class="verdict-block"`)
 	end := strings.Index(report, `class="fix-first"`)
@@ -206,11 +221,11 @@ func TestGenerateReport_StructuredSummaryDrivesVerdictUpshotAndFixFirst(t *testi
 	actionsEnd := strings.Index(report, "<h2>Review Summary</h2>")
 	actions := report[end:actionsEnd]
 	assert.Contains(t, actions, "Fix first")
-	assert.Contains(t, actions, "The reviewer's pick of the findings below; the full list follows.")
+	assert.Contains(t, actions, "The reviewer&#39;s pick of the findings below; the full list follows.")
 
-	first := strings.Index(actions, `href="#finding-1"`)
+	first := strings.Index(actions, `href="#finding-4"`)
 	second := strings.Index(actions, `href="#finding-8"`)
-	assert.Greater(t, first, -1, "A-1 resolves to the first finding")
+	assert.Greater(t, first, -1, "A-1 resolves to its card")
 	assert.Greater(t, second, first, "A-2 follows in priority order")
 	assert.Contains(t, actions, "Nil dereference when the config is missing.")
 	assert.Contains(t, actions, "Connection leak on error.")
@@ -283,7 +298,7 @@ func TestGenerateReport_StructuredSummaryWithoutPrioritiesHasNoActionsOrSuggesti
 	assert.Contains(t, report, "Nothing to add.")
 }
 
-func TestMergedRecordLinksByLocationWhenTheSurvivorHasNoID(t *testing.T) {
+func TestMergedRecordIsCoveredByLocationWhenTheSurvivorHasNoID(t *testing.T) {
 	in := layoutFixtureInput()
 	in.Comments = []types.LineComment{
 		{FilePath: "a.go", LineNumber: 13, Importance: "CRITICAL", Provenance: "agent", CommentBody: "survivor without an id", State: "confirmed"},
@@ -291,9 +306,85 @@ func TestMergedRecordLinksByLocationWhenTheSurvivorHasNoID(t *testing.T) {
 		{FilePath: "SUMMARY", CommentBody: "Verdict: approve."},
 	}
 	report := renderLayoutFixture(t, in)
-	if !strings.Contains(report, `<a href="#finding-1">a.go:13</a>`) {
-		t.Errorf("a merged record must link to its survivor by location when no id is available:\n%s", report[strings.Index(report, "Merged claims"):][:600])
+	assert.Contains(t, report, `<div class="also-covers">Also covers: folded claim</div>`)
+}
+
+func publishedStateFixture() ReportInput {
+	in := stateFixtureInput()
+	in.Comments[0].CommentBody += " Same root cause as A-2; see also A-7."
+	in.Comments = append(in.Comments, types.LineComment{ID: "A-7", FilePath: "secret.go", LineNumber: 2, Importance: "CRITICAL", Provenance: "agent", State: "confirmed",
+		CommentBody: "Token is logged in plain text."})
+	in.Publish = PublishView{
+		Withhold: func(c types.LineComment) bool { return c.ID == "A-7" },
+		Inline:   func(c types.LineComment) bool { return c.ID == "A-1" },
+		Title: func(c types.LineComment) string {
+			return map[string]string{"A-1": "Missing config crashes the handler"}[c.ID]
+		},
+		Confidence: 3,
 	}
+	return in
+}
+
+func TestGenerateReport_PublishedViewStatesWhatWasPosted(t *testing.T) {
+	report := renderLayoutFixture(t, publishedStateFixture())
+	block := report[strings.Index(report, `class="verdict-block"`):strings.Index(report, "<h2>Review Summary</h2>")]
+
+	assert.Contains(t, block, `<div class="verdict-text">Merge confidence 3/5</div>`)
+	assert.Contains(t, block, `<div class="verdict-upshot">Posted 1 inline comment and 5 summary notes.</div>`)
+	assert.NotContains(t, block, "real crash path")
+	assert.NotContains(t, block, "Reviewer")
+	assert.NotContains(t, block, "Fix first")
+
+	top := block[strings.Index(block, "Most severe"):]
+	assert.Equal(t, 3, strings.Count(top, "<li"))
+	assert.Less(t, strings.Index(top, "Missing config crashes the handler"), strings.Index(top, "lib.go:7"), "the inline critical leads")
+	assert.NotContains(t, top, "worker.py", "a mechanical signal is not posted")
+
+	index := indexSection(t, report)
+	assert.Contains(t, index, "Missing config crashes the handler")
+	assert.NotContains(t, index, "Nil dereference when the config is missing.")
+}
+
+func TestGenerateReport_PublishedViewNamesNoWithheldFinding(t *testing.T) {
+	report := renderLayoutFixture(t, publishedStateFixture())
+	for _, leak := range []string{"A-7", "secret.go", "Token is logged", "A-2;"} {
+		assert.NotContains(t, report, leak)
+	}
+	assert.Contains(t, report, "Same root cause as <a href=\"#finding-8\" rel=\"nofollow\"><code>db.go:5</code></a>; see also another finding.")
+	assert.Contains(t, report, ">1 withheld</span>")
+}
+
+func TestGenerateReport_SaysWhyNothingWasPosted(t *testing.T) {
+	in := publishedStateFixture()
+	in.Publish.NotPublished = "the pull request is a draft"
+	report := renderLayoutFixture(t, in)
+	assert.Contains(t, report, `<div class="verdict-upshot">Not posted to the PR: the pull request is a draft.</div>`)
+	assert.NotContains(t, report, "Most severe")
+	assert.NotContains(t, report, groupInline)
+
+	in = publishedStateFixture()
+	in.Comments = in.Comments[5:6]
+	report = renderLayoutFixture(t, in)
+	assert.Contains(t, report, `<div class="verdict-upshot">No comments posted on abc1234.</div>`)
+}
+
+func TestGenerateReport_EmptySummaryTakesNoCardAndNoNumber(t *testing.T) {
+	in := stateFixtureInput()
+	in.Comments[5].Summary = &types.SummaryBlock{Verdict: "approve"}
+	report := renderLayoutFixture(t, in)
+	assert.NotContains(t, report, "<h2>Review Summary</h2>")
+	assert.NotContains(t, report, `class="summary-comment"`)
+	assert.Contains(t, report, "Comment 7 of 7")
+	assert.NotContains(t, report, "of 8")
+	assert.Contains(t, report, `id="finding-6"`, "the finding after the summary takes the next number")
+}
+
+func TestIDRefsLeaveCodeAndLongerLabelsAlone(t *testing.T) {
+	refs := newIDRefs([]types.LineComment{{ID: "E-1"}, {ID: "E-12"}, {ID: "summary"}})
+	refs.show("E-1", "finding-1", "a.go:3")
+	assert.Equal(t, "see [`a.go:3`](#finding-1), another finding and `E-1` in code", refs.markdown("see E-1, E-12 and `E-1` in code"))
+	assert.Equal(t, "a.go:3 but not E-13, docs/E-1 or summary", refs.plain("E-1 but not E-13, docs/E-1 or summary"))
+	assert.Equal(t, "```\nE-1\n``` then [`a.go:3`](#finding-1)", refs.markdown("```\nE-1\n``` then E-1"))
 }
 
 func TestGenerateReport_FixFirstListsAFindingOnceWhateverItIsCalled(t *testing.T) {
@@ -301,6 +392,6 @@ func TestGenerateReport_FixFirstListsAFindingOnceWhateverItIsCalled(t *testing.T
 	in.Comments[5].Summary = &types.SummaryBlock{Verdict: "request_changes", PriorityIDs: []string{"A-1", "app.go:13", "A-1"}}
 	report := renderLayoutFixture(t, in)
 	require.Contains(t, report, `class="fix-first"`, "one distinct pick out of seven is a short list")
-	card := report[strings.Index(report, `class="fix-first"`):strings.Index(report, "<h2>Review Summary</h2>")]
+	card := report[strings.Index(report, `class="fix-first"`):strings.Index(report, "<h2>Findings</h2>")]
 	assert.Equal(t, 1, strings.Count(card, "<li"), "label and location aliases of one finding render once")
 }

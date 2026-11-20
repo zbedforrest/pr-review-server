@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +160,26 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 	return rep
 }
 
+var gateBatchIDRe = regexp.MustCompile(`\bF\d+\b`)
+
+// gateReason names the findings a grade refers to by location: the batch
+// ids exist only inside one grading call.
+func gateReason(reason string, items []grader.Item) string {
+	locations := make(map[string]string, len(items))
+	for _, it := range items {
+		locations[it.ID] = it.File
+		if it.Line > 0 {
+			locations[it.ID] = it.File + ":" + strconv.Itoa(it.Line)
+		}
+	}
+	return gateBatchIDRe.ReplaceAllStringFunc(reason, func(id string) string {
+		if loc, ok := locations[id]; ok {
+			return loc
+		}
+		return id
+	})
+}
+
 // runGate runs the grader and records each grade on its finding; apply
 // changes what posts. Shadow runs pass a copy of the report and never apply,
 // so they only log.
@@ -196,7 +217,7 @@ func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.
 		if v == nil {
 			v = &types.Verification{Status: types.VerifySkipped}
 		}
-		v.Gate, v.GateCategory, v.GateReason, v.GateApplied = g.Grade, g.Category, g.Reason, true
+		v.Gate, v.GateCategory, v.GateReason, v.GateApplied = g.Grade, g.Category, gateReason(g.Reason, in.Items), true
 		if g.Grade == grader.GradeBad {
 			if strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") {
 				v.GateDemoted = true

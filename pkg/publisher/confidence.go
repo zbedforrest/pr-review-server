@@ -6,13 +6,15 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
-// A narrative that requests changes outranks the severity arithmetic: the
-// score can never read as "no blocking findings" while the verdict blocks.
+// A narrative that requests changes outranks the severity arithmetic, but
+// only over findings the PR shows: a verdict resting on findings that were
+// all held back has nothing published behind it.
 const requestChangesConfidenceCap = 3
 
 // Confidence is the merge-confidence score the summary comment reports:
 // MergeConfidence over the Shown findings, capped when the SUMMARY requests
-// changes. Anything else that renders the number must call this.
+// changes and a Shown medium or critical backs it. Anything else that
+// renders the number must call this.
 func Confidence(findings []payload.Finding, requiredCheckViolated bool) int {
 	critical, medium := 0, 0
 	for _, f := range findings {
@@ -27,7 +29,7 @@ func Confidence(findings []payload.Finding, requiredCheckViolated bool) int {
 		}
 	}
 	confidence := MergeConfidence(critical, medium, requiredCheckViolated)
-	if requestsChanges(findings) && confidence > requestChangesConfidenceCap {
+	if critical+medium > 0 && confidence > requestChangesConfidenceCap && requestsChanges(findings) {
 		confidence = requestChangesConfidenceCap
 	}
 	return confidence

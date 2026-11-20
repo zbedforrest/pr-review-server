@@ -69,7 +69,7 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
+	markup := report[:strings.Index(report, "<script>")]
 
 	assert.Equal(t, 3, strings.Count(markup, ">REFUTED</span>"), "index row, detailed comment and its reason note")
 	assert.Equal(t, 2, strings.Count(markup, ">VERIFIED</span>"))
@@ -85,8 +85,9 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", State: stateConfirmed,
 		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
 	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
-		CommentBody: "Other is unused.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
-	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"F1", "F2"}}}
+		CommentBody: "Other is unused. Unlike F1, this is cosmetic.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "request_changes",
+		Upshot: "F1 is a CRITICAL token leak.", PriorityIDs: []string{"F1", "F2"}}}
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 		Comments: []types.LineComment{summary, refuted, kept},
@@ -94,14 +95,16 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.NotContains(t, report, "leaks the session token")
-	assert.NotContains(t, report, "REFUTED")
+	for _, leak := range []string{"leaks the session token", "REFUTED", "F1", "token leak", "CRITICAL", "sev-critical\"", "request changes"} {
+		assert.NotContains(t, report, leak)
+	}
+	assert.Contains(t, report, "Unlike another finding, this is cosmetic.")
+	assert.Contains(t, report, `<div class="verdict-upshot">Posted 1 comment.</div>`)
 	assert.Contains(t, report, "Other is unused.")
 	assert.Contains(t, report, ">1 confirmed</span>")
 	assert.Contains(t, report, ">1 withheld</span>")
 	assert.Contains(t, report, `<div class="verdict-text">Merge confidence 4/5</div>`)
-	assert.Contains(t, report, `<div class="verdict-agent">Reviewer&#39;s verdict: approve.</div>`)
-	assert.NotContains(t, report, `class="fix-first"`, "Fix first is dropped once it would list every shown finding")
+	assert.NotContains(t, report, `class="fix-first"`)
 }
 
 func TestGenerateReport_ShowsNoVerificationPillsWhenNothingWasVerified(t *testing.T) {
@@ -152,13 +155,27 @@ func TestGenerateReport_LeadsWithTheRewriteGitHubShows(t *testing.T) {
 func TestGenerateReport_EmbedsNoChatClientOrDuplicateDiff(t *testing.T) {
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n package a\n+var distinctiveDiffLine = 1\n", PRNumber: 7, PRTitle: "t",
-		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0), Prompt: "the prompt",
+		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 	})
 	require.NoError(t, err)
 	assert.NotContains(t, report, "generativelanguage.googleapis.com")
 	assert.NotContains(t, report, "API_KEY")
 	assert.Equal(t, 1, strings.Count(report, "distinctiveDiffLine"))
-	assert.Contains(t, report, "the prompt")
+	assert.NotContains(t, report, "chat-sidebar")
+	assert.NotContains(t, report, "prompt-handle")
+	assert.NotContains(t, report, "prompt-body")
+	assert.NotContains(t, report, "Prompt handle")
+}
+
+func TestGenerateReport_HighlightsOnlyWhenTheLibraryLoadedAndAfterNavigationIsWired(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	require.NoError(t, err)
+	guard := strings.Index(report, "if (window.hljs) {")
+	require.Positive(t, guard)
+	assert.Equal(t, 1, strings.Count(report, "hljs.highlightElement"))
+	assert.Greater(t, strings.Index(report, "window.hljs.highlightElement"), guard)
+	assert.Greater(t, guard, strings.Index(report, "document.addEventListener('keydown'"))
+	assert.Greater(t, guard, strings.Index(report, "comment.id = `comment-${number}`"))
 }
 
 func TestGenerateReport_ShowsTheCostOfEachStage(t *testing.T) {
@@ -191,6 +208,6 @@ func TestGenerateReport_GroupsTheIndexByHowFindingsPost(t *testing.T) {
 	inline, notes, unverified := strings.Index(index, "<h3>Inline comments on the PR</h3>"), strings.Index(index, "<h3>Summary notes</h3>"), strings.Index(index, "<h3>Needs verification</h3>")
 	require.True(t, inline >= 0 && notes > inline && unverified > notes, "inline, then notes, then unverified")
 	critical, medium, low := strings.Index(index, "A critical inline."), strings.Index(index, "A medium inline."), strings.Index(index, "A low note.")
-	assert.True(t, inline < critical && critical < medium && medium < notes && notes < low, "severity order inside each group")
+	assert.True(t, inline < medium && medium < critical && critical < notes && notes < low, "page order inside each group")
 	assert.NotContains(t, index, "<h3>Confirmed</h3>")
 }

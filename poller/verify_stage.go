@@ -308,18 +308,23 @@ func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.I
 	}
 }
 
-func (p *Poller) verifyAgentConfig(ctx context.Context, cloneRoot string) service.AgentConfig {
-	backend := p.cfg.VerifyAgentBackend
+func (p *Poller) verifyAgentBackendModel() (backend, model string) {
+	backend = p.cfg.VerifyAgentBackend
 	if backend == "" {
 		backend = p.cfg.AgentBackend
 	}
-	model := p.cfg.VerifyAgentModel
+	model = p.cfg.VerifyAgentModel
 	if model == "" {
 		model = "claude-opus-5-5"
 		if strings.EqualFold(backend, service.AgentBackendOpenRouter) {
 			model = "anthropic/claude-opus-5.5"
 		}
 	}
+	return backend, model
+}
+
+func (p *Poller) verifyAgentConfig(ctx context.Context, cloneRoot string) service.AgentConfig {
+	backend, model := p.verifyAgentBackendModel()
 	token := ""
 	if p.ghClientConcrete != nil {
 		if tok, err := p.ghClientConcrete.CurrentToken(ctx); err == nil {
