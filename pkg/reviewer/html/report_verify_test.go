@@ -85,8 +85,9 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", State: stateConfirmed,
 		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
 	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
-		CommentBody: "Other is unused.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
-	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"F1", "F2"}}}
+		CommentBody: "Other is unused. Unlike F1, this is cosmetic.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "request_changes",
+		Upshot: "F1 is a CRITICAL token leak.", PriorityIDs: []string{"F1", "F2"}}}
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 		Comments: []types.LineComment{summary, refuted, kept},
@@ -94,14 +95,16 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.NotContains(t, report, "leaks the session token")
-	assert.NotContains(t, report, "REFUTED")
+	for _, leak := range []string{"leaks the session token", "REFUTED", "F1", "token leak", "CRITICAL", "sev-critical\"", "request changes"} {
+		assert.NotContains(t, report, leak)
+	}
+	assert.Contains(t, report, "Unlike another finding, this is cosmetic.")
+	assert.Contains(t, report, `<div class="verdict-upshot">Posted 1 comment.</div>`)
 	assert.Contains(t, report, "Other is unused.")
 	assert.Contains(t, report, ">1 confirmed</span>")
 	assert.Contains(t, report, ">1 withheld</span>")
 	assert.Contains(t, report, `<div class="verdict-text">Merge confidence 4/5</div>`)
-	assert.Contains(t, report, `<div class="verdict-agent">Reviewer&#39;s verdict: approve.</div>`)
-	assert.NotContains(t, report, `class="fix-first"`, "Fix first is dropped once it would list every shown finding")
+	assert.NotContains(t, report, `class="fix-first"`)
 }
 
 func TestGenerateReport_ShowsNoVerificationPillsWhenNothingWasVerified(t *testing.T) {

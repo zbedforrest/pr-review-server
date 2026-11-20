@@ -182,3 +182,11 @@ func TestGatePriorsMarksLedgerRowsPostedAndLabelsSettledPoints(t *testing.T) {
 		t.Fatalf("settled prior = %+v", got[1])
 	}
 }
+
+func TestGateReasonNamesBatchIDsByLocation(t *testing.T) {
+	items := []grader.Item{{ID: "F1", File: "a.go", Line: 12}, {ID: "F2", File: "b.go"}}
+	want := "Duplicate of a.go:12; b.go covers it, F3 and F12 do not, nor does RFC1."
+	if got := gateReason("Duplicate of F1; F2 covers it, F3 and F12 do not, nor does RFC1.", items); got != want {
+		t.Fatalf("gateReason = %q, want %q", got, want)
+	}
+}
