@@ -180,127 +180,9 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }
         
-        /* Context lines for adjacent comments */
-        .context-code { 
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; 
-            font-size: 12px; 
-            background-color: #161b22; 
-            border: 1px solid #30363d; 
-            border-radius: 6px; 
-            margin: 10px 0; 
-            overflow-x: auto; 
-        }
-        .context-line { 
-            display: flex; 
-            border-bottom: 1px solid #21262d; 
-        }
-        .context-line:last-child { 
-            border-bottom: none; 
-        }
-        .context-line-num { 
-            padding: 2px 10px; 
-            text-align: right; 
-            color: #8b949e; 
-            width: 50px; 
-            background-color: #0d1117; 
-            border-right: 1px solid #30363d; 
-            flex-shrink: 0; 
-        }
-        .context-line-content { 
-            padding: 2px 10px; 
-            white-space: pre; 
-            flex-grow: 1; 
-        }
         .target-line { 
             background-color: rgba(255, 212, 59, 0.15); /* Highlight the commented line in amber */
         }
-        .target-line .context-line-content { 
-            background-color: rgba(255, 212, 59, 0.15); 
-        }
-        .target-line .context-line-num { 
-            background-color: rgba(255, 212, 59, 0.25); 
-            color: #f0c674; 
-            font-weight: bold; 
-        }
-
-        .chat-sidebar {
-            position: fixed;
-            right: -350px;
-            top: 0;
-            width: 350px;
-            height: 100%;
-            background-color: #161b22;
-            border-left: 1px solid #30363d;
-            box-shadow: -2px 0 5px rgba(0,0,0,0.1);
-            transition: right 0.3s ease-in-out;
-            display: flex;
-            flex-direction: column;
-            z-index: 1001;
-            color: #c9d1d9;
-        }
-
-        .chat-sidebar.open {
-            right: 0;
-        }
-
-        .chat-handle {
-            position: absolute;
-            left: -79px;
-            top: 20px;
-            width: 70px;
-            height: 50px;
-            background-color:rgb(114, 74, 223);
-            color: #0d1117;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            border-radius: 8px 0 0 8px;
-            font-size: 14px;
-            font-weight: bold;
-            flex-direction: column;
-            padding: 4px;
-            gap: 2px;
-        }
-
-
-        .prompt-content h3 {
-            margin-top: 0;
-            text-align: center;
-            border-bottom: 1px solid #30363d;
-            padding-bottom: 10px;
-        }
-
-
-
-
-
-
-
-
-
-
-        .prompt-content {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            padding: 15px;
-        }
-
-        .prompt-body {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 10px;
-            background-color: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 4px;
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            font-size: 12px;
-        }
-
-        .hidden { display: none; }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -322,14 +204,8 @@
       Click the 🔗 on a comment to copy a link to it
     </div>
 
-    {{template "sidebar" .}}
-
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        document.querySelectorAll('.comment-body pre code').forEach((block) => {
-            hljs.highlightElement(block);
-        });
-
         const comments = document.querySelectorAll('.comment-body, .summary-comment, .general-comment');
         const totalComments = comments.length;
 
@@ -458,31 +334,26 @@
         document.addEventListener('keydown', (e) => {
             const key = (e.key || '').toLowerCase();
             if (key === 'j' || key === 'k') {
-                const activeElement = document.activeElement;
-                const chatSidebar = document.getElementById('chat-sidebar');
-                const isTypingInChat = activeElement && (
-                    chatSidebar && chatSidebar.contains(activeElement)
-                );
-
-                if (!isTypingInChat) {
-                    e.preventDefault();
-                    if (comments.length > 0) {
-                        if (key === 'j') {
-                            currentCommentIndex = (currentCommentIndex + 1) % comments.length;
-                        } else {
-                            currentCommentIndex = (currentCommentIndex === -1)
-                                ? comments.length - 1
-                                : (currentCommentIndex - 1 + comments.length) % comments.length;
-                        }
-                        comments[currentCommentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        highlightComment(currentCommentIndex);
+                e.preventDefault();
+                if (comments.length > 0) {
+                    if (key === 'j') {
+                        currentCommentIndex = (currentCommentIndex + 1) % comments.length;
+                    } else {
+                        currentCommentIndex = (currentCommentIndex === -1)
+                            ? comments.length - 1
+                            : (currentCommentIndex - 1 + comments.length) % comments.length;
                     }
+                    comments[currentCommentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    highlightComment(currentCommentIndex);
                 }
             }
         });
 
-        const sidebar = document.getElementById('chat-sidebar');
-        document.getElementById('prompt-handle').addEventListener('click', () => sidebar.classList.toggle('open'));
+        if (window.hljs) {
+            document.querySelectorAll('.comment-body pre code').forEach((block) => {
+                window.hljs.highlightElement(block);
+            });
+        }
     });
     </script>
   </body>

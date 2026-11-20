@@ -715,7 +715,6 @@ type ReportInput struct {
 	PRURL           string
 	PRTitle         string
 	PRBody          string
-	Prompt          string
 	CommitSHA       string
 	ModelName       string
 	PromptTokens    int32
@@ -1326,7 +1325,6 @@ func generateReport(in ReportInput) (string, error) {
 		Rejected             []RecordView
 		Unexamined           []RecordView
 		Disputed             []RecordView
-		Prompt               template.HTML
 		Files                []*DiffFile
 		Comments             map[string]map[int][]CommentView
 		Summaries            []SummaryView
@@ -1348,31 +1346,27 @@ func generateReport(in ReportInput) (string, error) {
 		Stages               []StageRecord
 		StagesCost           string
 	}{
-		PRNumber:        in.PRNumber,
-		PRURL:           in.PRURL,
-		PageTitle:       pageTitle,
-		Heading:         heading,
-		Description:     description,
-		Verdict:         headline,
-		VerdictClass:    headlineClass,
-		Upshot:          upshot,
-		PostedLine:      postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
-		TopFindings:     top,
-		ConfirmedCount:  counts[groupConfirmed],
-		UnverifiedCount: counts[groupNeedsCheck],
-		MechanicalCount: counts[groupMechanical],
-		RejectedCount:   len(rejected),
-		WithheldCount:   withheld,
-		VerifyCounts:    verifyCounts(verifyMarks, verifyTally),
-		Suggestions:     refs.markdown(suggestions),
-		FixFirst:        actions,
-		Rejected:        rejected,
-		Unexamined:      recordViews(records, stateUnverified, refs),
-		Disputed:        disputed,
-		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
-		// jQuery). It is NOT Markdown: escape it so it renders as literal text
-		// instead of being interpreted as HTML/math. CSS handles line wrapping.
-		Prompt:               template.HTML(html.EscapeString(in.Prompt)),
+		PRNumber:             in.PRNumber,
+		PRURL:                in.PRURL,
+		PageTitle:            pageTitle,
+		Heading:              heading,
+		Description:          description,
+		Verdict:              headline,
+		VerdictClass:         headlineClass,
+		Upshot:               upshot,
+		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
+		TopFindings:          top,
+		ConfirmedCount:       counts[groupConfirmed],
+		UnverifiedCount:      counts[groupNeedsCheck],
+		MechanicalCount:      counts[groupMechanical],
+		RejectedCount:        len(rejected),
+		WithheldCount:        withheld,
+		VerifyCounts:         verifyCounts(verifyMarks, verifyTally),
+		Suggestions:          refs.markdown(suggestions),
+		FixFirst:             actions,
+		Rejected:             rejected,
+		Unexamined:           recordViews(records, stateUnverified, refs),
+		Disputed:             disputed,
 		Files:                diffFiles,
 		Comments:             commentsByFile,
 		Summaries:            summaries,
