@@ -383,6 +383,7 @@ func (s *Server) Start() error {
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
 	http.Handle(publishRepliesPath, withAuth(s.handlePublishReplies))
+	http.Handle(exportPath, withAuth(s.handleExport))
 	// The daily health report: the scheduler posts with a job token, people
 	// read with their session.
 	http.Handle(dailyHealthPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
