@@ -233,4 +233,5 @@ func TestGenerateReport_DoesNotCountUnsettledFindingsAsConfirmed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, report, ">1 confirmed</span>")
 	assert.Contains(t, report, ">1 could not verify</span>")
+	assert.Equal(t, 2, strings.Count(report, ">1 could not verify</span>"), "the header pill and the verification row")
 }

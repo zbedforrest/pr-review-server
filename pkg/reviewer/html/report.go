@@ -1671,6 +1671,7 @@ func generateReport(in ReportInput) (string, error) {
 		PostedLine           string
 		TopFindings          []FixFirstItem
 		ConfirmedCount       int
+		UnsettledCount       int
 		UnverifiedCount      int
 		MechanicalCount      int
 		ShownCount           int
@@ -1714,6 +1715,7 @@ func generateReport(in ReportInput) (string, error) {
 		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
 		TopFindings:          top,
 		ConfirmedCount:       counts[groupConfirmed] - unsettled,
+		UnsettledCount:       unsettled,
 		UnverifiedCount:      counts[groupNeedsCheck],
 		MechanicalCount:      counts[groupMechanical],
 		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical],
