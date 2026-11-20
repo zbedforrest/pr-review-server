@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { IconTooltip } from '@/components/common/IconTooltip';
 import type { PR } from '@/types/pr';
 
 interface MergeReadyIndicatorProps {
@@ -14,8 +15,8 @@ export const MergeReadyIndicator = memo(function MergeReadyIndicator({ pr }: Mer
   const reviews = pr.review_decision === 'APPROVED' ? 'required reviews approved' : 'no required reviews outstanding';
   const label = `Ready to merge: ${approvals}, ${reviews}, required checks passing, no conflicts`;
   return (
-    <span className="pr-table__merge-ready" role="img" aria-label={label} title={label}>
+    <IconTooltip label={label} className="pr-table__merge-ready">
       ✅
-    </span>
+    </IconTooltip>
   );
 });
