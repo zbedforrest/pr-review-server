@@ -50,7 +50,14 @@ func TestVerifyMarkForCarriesAppliedReasonsOnly(t *testing.T) {
 		Status: types.VerifyHold, Applied: true, Reason: "The repro never reaches line 230.",
 		Gate: "OK", GateApplied: true, GateReason: "Accurate but overstated.",
 	})
-	assert.Equal(t, []string{"Verifier: The repro never reaches line 230.", "Quality gate (OK): Accurate but overstated."}, m.VerifyReasons)
+	assert.Equal(t, []string{"Verifier: The repro never reaches line 230."}, m.VerifyReasons,
+		"an OK grade changes nothing on the page, so its free text is not shown")
+
+	bad := verifyMarkFor(&types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "BAD", GateApplied: true, GateReason: "Restates the PR."})
+	assert.Equal(t, []string{"Quality gate (BAD): Restates the PR."}, bad.VerifyReasons)
+
+	revised := verifyMarkFor(&types.Verification{Status: types.VerifyRevise, Applied: true, Reason: "The claim that this contradicts the PR is wrong."})
+	assert.Equal(t, []string{"Verifier, on the original wording: The claim that this contradicts the PR is wrong."}, revised.VerifyReasons)
 
 	shadow := verifyMarkFor(&types.Verification{Status: types.VerifyDrop, Reason: "recorded only", Gate: "BAD", GateReason: "recorded only"})
 	assert.Empty(t, shadow.VerifyReasons)
@@ -210,4 +217,21 @@ func TestGenerateReport_GroupsTheIndexByHowFindingsPost(t *testing.T) {
 	critical, medium, low := strings.Index(index, "A critical inline."), strings.Index(index, "A medium inline."), strings.Index(index, "A low note.")
 	assert.True(t, inline < medium && medium < critical && critical < notes && notes < low, "page order inside each group")
 	assert.NotContains(t, index, "<h3>Confirmed</h3>")
+}
+
+func TestGenerateReport_DoesNotCountUnsettledFindingsAsConfirmed(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{
+			{FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", State: stateConfirmed, CommentBody: "Handle drops the error.",
+				Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}},
+			{FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed, CommentBody: "Other is unused.",
+				Verification: &types.Verification{Status: types.VerifyUnavailable, Applied: true}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, report, ">1 confirmed</span>")
+	assert.Contains(t, report, ">1 could not verify</span>")
+	assert.Equal(t, 2, strings.Count(report, ">1 could not verify</span>"), "the header pill and the verification row")
 }

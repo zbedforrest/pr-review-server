@@ -10,6 +10,7 @@ import (
 
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/types"
+	"pr-review-server/pkg/textcut"
 )
 
 // Completer runs one schema-enforced completion (llm.OpenRouterClient).
@@ -404,10 +405,8 @@ func quoteLines(it Item, start, end int) string {
 	return loc + "\n" + strings.Join(lines, "\n")
 }
 
+// cut keeps a stored reason within n runes, ending at a sentence or word
+// boundary so the report never shows a word cut in half.
 func cut(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) <= n {
-		return string(r)
-	}
-	return string(r[:n-1]) + "…"
+	return textcut.Clamp(strings.TrimSpace(s), n)
 }

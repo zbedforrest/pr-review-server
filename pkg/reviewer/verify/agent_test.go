@@ -170,7 +170,7 @@ func TestApplyAgent_HidesOnlyLowFindingsJudgedNotWorthPosting(t *testing.T) {
 		})
 	}
 	c, _ := ApplyAgent(low, keep(&no, "same point as F2", "F2"))
-	if c.Verification.ValueReason != "duplicate of F2: same point as F2" {
+	if c.Verification.ValueReason != "Repeats another finding: same point as F2" {
 		t.Fatalf("reason = %q", c.Verification.ValueReason)
 	}
 }
@@ -190,7 +190,7 @@ func TestApplyAgent_PostsAMediumJudgedNotWorthPostingAsALowNote(t *testing.T) {
 	medium := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: "x"}
 	c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "restates F2", DuplicateOf: "F2"})
 	c.Verification.Applied = true
-	if c.Verification.LowValue || c.Verification.Suppresses() || c.Verification.ValueReason != "duplicate of F2: restates F2" {
+	if c.Verification.LowValue || c.Verification.Suppresses() || c.Verification.ValueReason != "Repeats another finding: restates F2" {
 		t.Fatalf("verification = %+v", c.Verification)
 	}
 	if c.Importance != "LOW" || c.Verification.DemotedFrom != "MEDIUM" {

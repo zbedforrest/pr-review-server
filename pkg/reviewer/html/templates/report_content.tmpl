@@ -99,6 +99,7 @@
         </div>
         <div class="verdict-counts">
             <span class="count-pill count-confirmed">{{.ConfirmedCount}} confirmed</span>
+            {{if .UnsettledCount}}<span class="count-pill count-unverified" title="The verifier looked but the repository could not settle these claims.">{{.UnsettledCount}} could not verify</span>{{end}}
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
