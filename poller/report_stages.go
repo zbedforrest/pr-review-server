@@ -95,9 +95,21 @@ var (
 	gateWords   = [][2]string{{"GOOD", "good"}, {"OK", "ok"}, {"BAD", "bad"}}
 )
 
+var skipWords = map[string]string{
+	"not_publish_bound":  "this review was not going to post",
+	"no_findings":        "no findings to check",
+	"no_inline_findings": "no inline findings to rewrite",
+	"over_budget":        "the day's budget was spent",
+	"busy":               "another run held the slot",
+	"deadline":           "too little time left in the run",
+}
+
 func statusDetail(status, skip string, counts map[string]int, words [][2]string) string {
 	if skip != "" {
-		return "skipped: " + strings.ReplaceAll(skip, "_", " ")
+		if plain, ok := skipWords[skip]; ok {
+			return "not run: " + plain
+		}
+		return "not run: " + strings.ReplaceAll(skip, "_", " ")
 	}
 	if len(counts) == 0 {
 		return status

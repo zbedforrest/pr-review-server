@@ -51,3 +51,8 @@ func TestRunsDetailSaysWhyARunWasNotUsed(t *testing.T) {
 		assert.Equal(t, want, runsDetail(ens))
 	}
 }
+
+func TestStatusDetailSaysWhyAStageDidNotRun(t *testing.T) {
+	assert.Equal(t, "not run: this review was not going to post", statusDetail("skipped", "not_publish_bound", nil, nil))
+	assert.Equal(t, "not run: legacy titles", statusDetail("skipped", "legacy_titles", nil, nil))
+}

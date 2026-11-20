@@ -1372,3 +1372,20 @@ func TestParseDiff_NotesWhyAFileHasNoLines(t *testing.T) {
 	assert.Contains(t, report, `font.woff2 <span class="file-note">Binary file not shown</span>`)
 	assert.Equal(t, 3, strings.Count(report, `class="file-note"`))
 }
+
+func TestGenerateReport_RendersCodeInTitlesAndDetail(t *testing.T) {
+	cond, expected := "Call `Save` with a full disk.", "`Handle` returns nil."
+	contract := &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact",
+		Headline: "`Save` errors are swallowed", CurrentImpact: "Failed `Save` calls report success today.", Falsifiability: "falsifiable",
+		FalsifiableCondition: &cond, ExpectedObservable: &expected, Uncertainty: "Only checked the disk path.",
+		SeverityRationale: "Data loss.", Subjects: []types.FindingSubject{{Kind: "symbol", Path: "a.go", Name: "Handle"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{{FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", CommentBody: "The write path drops errors.", FindingContract: contract}},
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<span class="finding-title"><code>Save</code> errors are swallowed</span>`)
+	assert.Contains(t, report, "<p>Failed <code>Save</code> calls report success today.</p>")
+	assert.Contains(t, report, "Call <code>Save</code> with a full disk. Expected: <code>Handle</code> returns nil.")
+	assert.NotContains(t, report[strings.Index(report, "<body>"):strings.Index(report, "<script>")], "`")
+}
