@@ -23,6 +23,12 @@
         </div>
         {{end}}
         {{range .File.Lines}}
+        {{if eq .Type "gap"}}
+        <div class="hunk-gap">
+            <div class="line-num"></div><div class="line-num"></div>
+            <div class="hunk-gap-text">{{.Content}}</div>
+        </div>
+        {{else}}
         <div class="line {{.Type}}">
             <div class="line-num">{{if eq .OldLineNumber 0}}-{{else}}{{.OldLineNumber}}{{end}}</div>
             <div class="line-num">{{if eq .NewLineNumber 0}}-{{else}}{{.NewLineNumber}}{{end}}</div>
@@ -44,6 +50,7 @@
                 {{end}}
             </div>
         </div>
+        {{end}}
         {{end}}
         {{end}}
     </div>
