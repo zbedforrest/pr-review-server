@@ -13,7 +13,7 @@
 
 {{define "status-pill"}}{{if .StatusPill}}<span class="status-pill status-{{.StatusClass}}">{{.StatusPill}}</span>{{end}}{{end}}
 
-{{define "verify-pill"}}{{if .VerifyPill}}<span class="status-pill verify-pill verify-{{.VerifyClass}}" title="{{.VerifyNote}}">{{.VerifyPill}}</span>{{end}}{{end}}
+{{define "verify-pill"}}{{if .VerifyPill}}<span class="status-pill verify-pill verify-{{.VerifyClass}} has-note" tabindex="0" data-note="{{.VerifyNote}}">{{.VerifyPill}}</span>{{end}}{{end}}
 
 {{define "finding-detail-line"}}{{if .}}<p>{{.}}</p>{{end}}{{end}}
 
@@ -102,7 +102,7 @@
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
-            {{if .WithheldCount}}<span class="count-pill count-withheld" title="Verification or publishing hygiene kept these off the PR, so they are not shown here either.">{{.WithheldCount}} withheld</span>{{end}}
+            {{if .WithheldCount}}<span class="count-pill count-withheld has-note" tabindex="0" data-note="Verification or publishing hygiene kept these off the PR, so they are not shown here either.">{{.WithheldCount}} withheld</span>{{end}}
         </div>
         {{if .VerifyCounts}}
         <div class="verify-counts">
@@ -255,6 +255,7 @@
         {{end}}
         <h3>Generation</h3>
         {{if .Stages}}
+        <div class="stage-table-wrap">
         <table class="stage-table">
             <thead><tr><th>Stage</th><th>Model</th><th>Result</th><th>Time</th><th>Cost</th></tr></thead>
             <tbody>
@@ -263,6 +264,9 @@
             </tbody>
             {{if .StagesCost}}<tfoot><tr><td colspan="4">Total</td><td>{{.StagesCost}}</td></tr></tfoot>{{end}}
         </table>
+        </div>
+        <p class="generation-meta">Kept, revised, good and ok findings can post; held back, refuted and bad ones do not.</p>
+        <p class="generation-meta">Findings on this page: {{.ShownCount}}.{{if .WithheldCount}} Held back by verification, the quality gate or publishing: {{.WithheldCount}}.{{end}}</p>
         {{else}}
         <p class="generation-meta">Model: {{.ModelName}}</p>
         <p class="generation-meta">Input tokens: {{.PromptTokenCount}} · Output tokens: {{.CandidatesTokenCount}}</p>

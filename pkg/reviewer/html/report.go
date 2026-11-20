@@ -282,6 +282,7 @@ type FindingRow struct {
 	FilePath    string
 	LineNumber  int
 	Title       string
+	order       int
 	VerifyMark
 }
 
@@ -581,11 +582,31 @@ func buildDescription(body string) descriptionView {
 	if len(paragraphs) <= 1 && utf8.RuneCountInString(strings.TrimSpace(body)) <= descriptionPreviewRunes {
 		return descriptionView{Full: full}
 	}
-	preview := ""
-	if len(paragraphs) > 0 {
-		preview = truncateWords(strings.TrimSpace(paragraphs[0]), descriptionPreviewRunes)
-	}
+	preview := truncateWords(firstProseParagraph(body), descriptionPreviewRunes)
 	return descriptionView{Folded: true, Preview: renderMarkdown(preview), Full: full}
+}
+
+var (
+	htmlCommentRe  = regexp.MustCompile(`(?s)<!--.*?-->`)
+	headingLineRe  = regexp.MustCompile(`^\s*#{1,6}(\s|$)`)
+	emptyListingRe = regexp.MustCompile(`^[\s*_-]*(none|n/a)?[\s.*_-]*$`)
+)
+
+// firstProseParagraph is the first paragraph of a PR body that says
+// something: template headings, HTML comments and empty answers are skipped.
+func firstProseParagraph(body string) string {
+	for _, p := range splitParagraphs(htmlCommentRe.ReplaceAllString(body, "")) {
+		var kept []string
+		for _, line := range strings.Split(p, "\n") {
+			if !headingLineRe.MatchString(line) {
+				kept = append(kept, line)
+			}
+		}
+		if text := strings.TrimSpace(strings.Join(kept, "\n")); !emptyListingRe.MatchString(strings.ToLower(text)) {
+			return text
+		}
+	}
+	return ""
 }
 
 // ContextLine represents a line of code context for adjacent comments
@@ -1064,6 +1085,69 @@ func fixFirstItems(ids []string, byID map[string]CommentView, title func(types.L
 	return out
 }
 
+// Page sections in the order the layout renders their cards.
+const (
+	sectionNone = iota
+	sectionSummary
+	sectionGeneral
+	sectionDiff
+	sectionAdjacent
+)
+
+// cardPlace is where one active comment's card lands on the page.
+type cardPlace struct {
+	index, section, file, line int
+}
+
+// diffPlace finds the diff file a finding renders under: whole-file findings
+// under the header, the rest under a new-side line (a deleted line carries
+// no new-side number, so a finding there falls to the adjacent section).
+func diffPlace(files []*DiffFile, c types.LineComment) (int, bool) {
+	for i, f := range files {
+		if f.Path != c.FilePath {
+			continue
+		}
+		if c.LineNumber == 0 {
+			return i, true
+		}
+		for _, line := range f.Lines {
+			if line.NewLineNumber == c.LineNumber {
+				return i, true
+			}
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// numberCards numbers the cards in page order; a place with no card gets 0.
+func numberCards(places []cardPlace) (counters []int, total int) {
+	ordered := make([]cardPlace, 0, len(places))
+	for _, p := range places {
+		if p.section != sectionNone {
+			ordered = append(ordered, p)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.section != b.section {
+			return a.section < b.section
+		}
+		if a.section != sectionDiff {
+			return false
+		}
+		if a.file != b.file {
+			return a.file < b.file
+		}
+		return a.line < b.line
+	})
+	counters = make([]int, len(places))
+	for n, p := range ordered {
+		counters[p.index] = n + 1
+	}
+	return counters, len(ordered)
+}
+
 func fixFirstItem(v CommentView, title string) FixFirstItem {
 	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, VerifyMark: v.VerifyMark}
 }
@@ -1093,12 +1177,16 @@ func generateReport(in ReportInput) (string, error) {
 	splitByInline := in.Publish.Inline != nil && in.Publish.NotPublished == ""
 
 	// Cards are numbered before any is built so a body can link to a later
-	// one; a SUMMARY with nothing to say takes no card and no number.
-	counters := make([]int, len(activeComments))
+	// one, and in the order the page lays them out so the index, the deep
+	// links and the J/K order agree. A SUMMARY with nothing to say takes no
+	// card and no number.
 	summaryProse := map[int]string{}
-	totalComments, sawSummary := 0, false
+	places := make([]cardPlace, len(activeComments))
+	sawSummary := false
 	for i, comment := range activeComments {
-		if comment.FilePath == "SUMMARY" {
+		places[i] = cardPlace{index: i, section: sectionAdjacent}
+		switch {
+		case comment.FilePath == "SUMMARY":
 			prose := ""
 			switch {
 			case sawSummary:
@@ -1114,17 +1202,26 @@ func generateReport(in ReportInput) (string, error) {
 				prose = parts.Prose
 			}
 			sawSummary = true
+			places[i].section = sectionSummary
 			if strings.TrimSpace(prose) == "" {
+				places[i].section = sectionNone
 				continue
 			}
 			summaryProse[i] = prose
+		case comment.FilePath == "GENERAL":
+			places[i].section = sectionGeneral
+		default:
+			if file, ok := diffPlace(diffFiles, comment); ok {
+				places[i].section, places[i].file, places[i].line = sectionDiff, file, comment.LineNumber
+			}
 		}
-		totalComments++
-		counters[i] = totalComments
-		if comment.FilePath == "SUMMARY" {
+	}
+	counters, totalComments := numberCards(places)
+	for i, comment := range activeComments {
+		if counters[i] == 0 || comment.FilePath == "SUMMARY" {
 			continue
 		}
-		anchor, loc := fmt.Sprintf("finding-%d", totalComments), location(comment.FilePath, comment.LineNumber)
+		anchor, loc := fmt.Sprintf("finding-%d", counters[i]), location(comment.FilePath, comment.LineNumber)
 		if comment.ID != "" {
 			anchors[comment.ID] = anchor
 			refs.show(comment.ID, anchor, loc)
@@ -1192,7 +1289,7 @@ func generateReport(in ReportInput) (string, error) {
 		title := in.Publish.titleOf(comment)
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
-			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, VerifyMark: view.VerifyMark,
+			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, order: view.Counter, VerifyMark: view.VerifyMark,
 		}
 		switch {
 		case indexGroup == groupInline:
@@ -1216,30 +1313,7 @@ func generateReport(in ReportInput) (string, error) {
 			continue
 		}
 
-		canDisplayInline := false
-		for _, diffFile := range diffFiles {
-			if diffFile.Path != comment.FilePath {
-				continue
-			}
-			if comment.LineNumber == 0 {
-				// Whole-file finding: displayable whenever the file is in
-				// the diff. Must not match per-line, since added/deleted
-				// lines carry a zero Old/NewLineNumber.
-				canDisplayInline = true
-				break
-			}
-			// Comments render under new-side lines only, so a match on a
-			// deleted line alone goes to the adjacent section instead.
-			for _, line := range diffFile.Lines {
-				if line.NewLineNumber == comment.LineNumber {
-					canDisplayInline = true
-					break
-				}
-			}
-			break
-		}
-
-		if canDisplayInline {
+		if places[i].section == sectionDiff {
 			if _, ok := commentsByFile[comment.FilePath]; !ok {
 				commentsByFile[comment.FilePath] = make(map[int][]CommentView)
 			}
@@ -1258,7 +1332,7 @@ func generateReport(in ReportInput) (string, error) {
 	var findingGroups []FindingGroup
 	for _, name := range indexGroupOrder {
 		if g := groups[name]; len(g.Rows) > 0 {
-			sort.SliceStable(g.Rows, func(i, j int) bool { return severityRank(g.Rows[i].Severity) < severityRank(g.Rows[j].Severity) })
+			sort.SliceStable(g.Rows, func(i, j int) bool { return g.Rows[i].order < g.Rows[j].order })
 			findingGroups = append(findingGroups, *g)
 		}
 	}
@@ -1317,6 +1391,7 @@ func generateReport(in ReportInput) (string, error) {
 		ConfirmedCount       int
 		UnverifiedCount      int
 		MechanicalCount      int
+		ShownCount           int
 		RejectedCount        int
 		WithheldCount        int
 		VerifyCounts         []VerifyCount
@@ -1359,6 +1434,7 @@ func generateReport(in ReportInput) (string, error) {
 		ConfirmedCount:       counts[groupConfirmed],
 		UnverifiedCount:      counts[groupNeedsCheck],
 		MechanicalCount:      counts[groupMechanical],
+		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical],
 		RejectedCount:        len(rejected),
 		WithheldCount:        withheld,
 		VerifyCounts:         verifyCounts(verifyMarks, verifyTally),

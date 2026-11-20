@@ -6,13 +6,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PRism review: {{.PageTitle}}</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.5; background-color: #0d1117; color: #c9d1d9; margin: 0; }
+        :root {
+            color-scheme: dark;
+            --bg: #0d1117; --panel: #161b22; --border: #30363d; --border-soft: #21262d;
+            --text: #c9d1d9; --muted: #8b949e; --strong: #f0f6fc; --link: #58a6ff; --link-hover: #80bfff;
+            --comment-bg: #1f2a50; --comment-border: #2a3b4d; --on-accent: #0d1117;
+            --ok-text: #3fb950; --warn-text: #e3b341; --bad-text: #ff7b72;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                color-scheme: light;
+                --bg: #ffffff; --panel: #f6f8fa; --border: #d0d7de; --border-soft: #d8dee4;
+                --text: #1f2328; --muted: #57606a; --strong: #1f2328; --link: #0969da; --link-hover: #0550ae;
+                --comment-bg: #ddf4ff; --comment-border: #9cd1f7; --on-accent: #ffffff;
+                --ok-text: #1a7f37; --warn-text: #7d4e00; --bad-text: #cf222e;
+            }
+            .sev-pill { background-color: #57606a; }
+            .sev-critical, .sev-high { background-color: #cf222e; }
+            .sev-medium { background-color: #9a6700; }
+            .sev-low { background-color: #1a7f37; }
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.5; background-color: var(--bg); color: var(--text); margin: 0; }
         .container { max-width: 1200px; margin: 20px auto; }
-        h1 { text-align: center; color: #58a6ff; }
-        h1 a { color: #58a6ff; text-decoration: none; }
-        h1 a:hover { color: #80bfff; text-decoration: underline; }
-        .diff-file { border: 1px solid #30363d; border-radius: 6px; margin-bottom: 20px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; }
-        .file-header { background-color: #161b22; padding: 10px; border-bottom: 1px solid #30363d; font-weight: 600; }
+        h1 { text-align: center; color: var(--link); }
+        h1 a { color: var(--link); text-decoration: none; }
+        h1 a:hover { color: var(--link-hover); text-decoration: underline; }
+        .diff-file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 20px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; }
+        .file-header { background-color: var(--panel); padding: 10px; border-bottom: 1px solid var(--border); font-weight: 600; }
         /* display:table is load-bearing, not redundant with the table-row/table-cell
            children below. Without it this div is a block, its rows get wrapped in an
            anonymous table box, and that box — not this div — sizes the columns. An
@@ -22,151 +42,151 @@
            mid-row. */
         .diff-table { display: table; width: 100%; border-collapse: collapse; }
         .line { display: table-row; }
-        .line-num { display: table-cell; padding: 2px 10px; text-align: right; color: #8b949e; width: 40px; background-color: #161b22; border-right: 1px solid #30363d; }
+        .line-num { display: table-cell; padding: 2px 10px; text-align: right; color: var(--muted); width: 40px; background-color: var(--panel); border-right: 1px solid var(--border); }
         .line-content { display: table-cell; padding: 2px 10px; white-space: pre-wrap; }
         .added .line-content { background-color: rgba(46, 160, 67, 0.15); }
         .added .line-content::before { content: "+"; padding-right: 10px; color: #2ea043; }
         .deleted .line-content { background-color: rgba(248, 81, 73, 0.15); }
         .deleted .line-content::before { content: "-"; padding-right: 10px; color: #f85149; }
         .comment-row { display: table-row; }
-        .comment-cell { display: table-cell; background-color: #161b22; padding: 10px; border-top: 1px solid #30363d; }
-        .comment-body { background-color: #1f2a50; border: 1px solid #2a3b4d; border-radius: 6px; padding: 15px; margin: 5px 0; }
-        .comment-body pre { background-color: #161b22; padding: 10px; border-radius: 3px; }
+        .comment-cell { display: table-cell; background-color: var(--panel); padding: 10px; border-top: 1px solid var(--border); }
+        .comment-body { background-color: var(--comment-bg); border: 1px solid var(--comment-border); border-radius: 6px; padding: 15px; margin: 5px 0; }
+        .comment-body pre { background-color: var(--panel); padding: 10px; border-radius: 3px; }
         .comment-body code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
-        .comment-counter { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 12px; font-weight: bold; color: #a3a3a3; margin-bottom: 10px; }
+        .comment-counter { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 12px; font-weight: bold; color: var(--muted); margin-bottom: 10px; }
         /* Copy-a-deep-link button. Kept quiet until hover so it doesn't compete
            with the review prose, but always present (not hover-only) so it is
            reachable on touch and by keyboard. */
-        .comment-link-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; padding: 3px; background: none; border: none; border-radius: 4px; color: #8b949e; cursor: pointer; line-height: 0; }
-        .comment-link-btn:hover { color: #58a6ff; background-color: rgba(88, 166, 255, 0.15); }
-        .comment-link-btn:focus-visible { outline: 1px solid #58a6ff; outline-offset: 1px; }
+        .comment-link-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; padding: 3px; background: none; border: none; border-radius: 4px; color: var(--muted); cursor: pointer; line-height: 0; }
+        .comment-link-btn:hover { color: var(--link); background-color: rgba(88, 166, 255, 0.15); }
+        .comment-link-btn:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
         /* Transient "Link copied" pill. Sits below the button rather than beside
            it — the counter text is immediately to its left. */
         .comment-link-btn[data-flash]::after { content: attr(data-flash); position: absolute; top: 100%; right: 0; margin-top: 6px; padding: 3px 9px; border-radius: 10px; background-color: #1f6feb; color: #f0f6fc; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index: 5; }
         /* Ring on the comment the current #comment-N fragment points at. */
         .comment-highlight { box-shadow: 0 0 0 2px #d29922; }
         .deterministic-alerts { background-color: #2d1a05; border: 2px solid #d29922; border-radius: 6px; padding: 15px 20px; margin-bottom: 20px; }
-        .deterministic-alerts h2, .deterministic-alerts h3 { color: #e3b341; margin-top: 0; }
-        .deterministic-alerts-note { color: #c9d1d9; font-size: 13px; }
-        .deterministic-alert { background-color: #161b22; border: 1px solid #d29922; border-radius: 6px; padding: 12px 15px; margin: 10px 0; }
+        .deterministic-alerts h2, .deterministic-alerts h3 { color: var(--warn-text); margin-top: 0; }
+        .deterministic-alerts-note { color: var(--text); font-size: 13px; }
+        .deterministic-alert { background-color: var(--panel); border: 1px solid #d29922; border-radius: 6px; padding: 12px 15px; margin: 10px 0; }
         .deterministic-alert-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 12px; }
         .alert-badge { border-radius: 10px; padding: 2px 10px; font-weight: bold; }
-        .alert-provenance { background-color: #d29922; color: #0d1117; text-transform: uppercase; }
-        .alert-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; color: #8b949e; }
-        .alert-verdict { border: 1px solid #8b949e; color: #c9d1d9; }
+        .alert-provenance { background-color: #d29922; color: var(--on-accent); text-transform: uppercase; }
+        .alert-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; color: var(--muted); }
+        .alert-verdict { border: 1px solid var(--muted); color: var(--text); }
         .alert-verdict-violated { border-color: #f85149; color: #f85149; }
-        .alert-verdict-unanswered { border-color: #d29922; color: #e3b341; }
-        .alert-verdict-unresolved { border-color: #d29922; color: #e3b341; }
-        .alert-verdict-safe { border-color: #2ea043; color: #3fb950; }
-        .alert-verdict-not-applicable { border-color: #8b949e; color: #8b949e; }
-        .deterministic-alert-body { color: #c9d1d9; }
-        .summary-section { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin: 20px 0; }
-        .summary-section h2 { color: #c9d1d9; margin-top: 0; }
-        .summary-comment { background-color: #1f2a50; border: 1px solid #2a3b4d; border-radius: 6px; padding: 15px; margin: 10px 0; }
-        .summary-body { color: #c9d1d9; line-height: 1.5; }
-        .summary-body h3, .summary-body h4 { color: #f0f6fc; }
-        .summary-body strong { color: #f0f6fc; }
+        .alert-verdict-unanswered { border-color: #d29922; color: var(--warn-text); }
+        .alert-verdict-unresolved { border-color: #d29922; color: var(--warn-text); }
+        .alert-verdict-safe { border-color: #2ea043; color: var(--ok-text); }
+        .alert-verdict-not-applicable { border-color: var(--muted); color: var(--muted); }
+        .deterministic-alert-body { color: var(--text); }
+        .summary-section { background-color: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 20px; margin: 20px 0; }
+        .summary-section h2 { color: var(--text); margin-top: 0; }
+        .summary-comment { background-color: var(--comment-bg); border: 1px solid var(--comment-border); border-radius: 6px; padding: 15px; margin: 10px 0; }
+        .summary-body { color: var(--text); line-height: 1.5; }
+        .summary-body h3, .summary-body h4 { color: var(--strong); }
+        .summary-body strong { color: var(--strong); }
         .pr-description {
-            background-color: #161b22;
-            border: 1px solid #30363d;
+            background-color: var(--panel);
+            border: 1px solid var(--border);
             border-radius: 6px;
             padding: 10px 20px;
             margin-bottom: 20px;
         }
         .report-header { margin-bottom: 16px; }
         .report-header h1 { margin-bottom: 4px; }
-        .report-meta { text-align: center; color: #8b949e; font-size: 14px; margin: 0; }
-        .report-meta a { color: #58a6ff; text-decoration: none; }
+        .report-meta { text-align: center; color: var(--muted); font-size: 14px; margin: 0; }
+        .report-meta a { color: var(--link); text-decoration: none; }
         .report-meta a:hover { text-decoration: underline; }
         .report-profile { margin-top: 4px; }
         .report-profile-deviations { font-size: 13px; }
         .report-meta .commit-sha { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
-        .pr-description-preview { color: #c9d1d9; }
+        .pr-description-preview { color: var(--text); }
         .pr-description:has(.pr-description-fold[open]) .pr-description-preview { display: none; }
-        .pr-description-fold summary { cursor: pointer; color: #58a6ff; font-size: 13px; margin: 4px 0 8px; }
+        .pr-description-fold summary { cursor: pointer; color: var(--link); font-size: 13px; margin: 4px 0 8px; }
         .pr-description-fold summary:hover { text-decoration: underline; }
-        .verdict-block { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #30363d; border-left: 5px solid #8b949e; border-radius: 6px; background-color: #161b22; padding: 12px 20px; margin-bottom: 20px; }
+        .verdict-block { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-left: 5px solid var(--muted); border-radius: 6px; background-color: var(--panel); padding: 12px 20px; margin-bottom: 20px; }
         .verdict-block[data-verdict="approve"] { border-left-color: #2ea043; }
         .verdict-block[data-verdict="changes"] { border-left-color: #f85149; }
-        .verdict-text { font-size: 18px; font-weight: 600; color: #f0f6fc; }
-        .group-hint { font-size: 12px; color: #8b949e; margin: -6px 0 6px; }
+        .verdict-text { font-size: 18px; font-weight: 600; color: var(--strong); }
+        .group-hint { font-size: 12px; color: var(--muted); margin: -6px 0 6px; }
         .stage-table { border-collapse: collapse; font-size: 13px; margin: 8px 0; }
-        .stage-table th, .stage-table td { border: 1px solid #30363d; padding: 4px 10px; text-align: left; }
+        .stage-table th, .stage-table td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
         .stage-table td:last-child, .stage-table th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-        .verdict-upshot { font-size: 14px; color: #c9d1d9; margin-top: 4px; }
+        .verdict-upshot { font-size: 14px; color: var(--text); margin-top: 4px; }
         .verdict-counts { display: flex; gap: 8px; flex-wrap: wrap; }
         .count-pill, .status-pill, .sev-pill { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 11px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
-        .count-pill { border: 1px solid #30363d; color: #c9d1d9; }
-        .count-confirmed { border-color: #2ea043; color: #3fb950; }
-        .count-unverified { border-color: #d29922; color: #e3b341; }
-        .count-mechanical { border-color: #8b949e; color: #8b949e; }
-        .count-rejected, .count-withheld { border-color: #6e7681; color: #8b949e; }
+        .count-pill { border: 1px solid var(--border); color: var(--text); }
+        .count-confirmed { border-color: #2ea043; color: var(--ok-text); }
+        .count-unverified { border-color: #d29922; color: var(--warn-text); }
+        .count-mechanical { border-color: var(--muted); color: var(--muted); }
+        .count-rejected, .count-withheld { border-color: #6e7681; color: var(--muted); }
         .status-pill { text-transform: uppercase; letter-spacing: 0.02em; }
-        .status-unverified { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: #e3b341; }
-        .status-mechanical { background-color: rgba(139, 148, 158, 0.18); border: 1px solid #8b949e; color: #c9d1d9; }
+        .status-unverified { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: var(--warn-text); }
+        .status-mechanical { background-color: rgba(139, 148, 158, 0.18); border: 1px solid var(--muted); color: var(--text); }
         .verify-pill { cursor: help; }
-        .verify-verified { background-color: rgba(46, 160, 67, 0.18); border: 1px solid #2ea043; color: #3fb950; }
-        .verify-disputed { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: #e3b341; }
-        .verify-refuted { background-color: rgba(248, 81, 73, 0.18); border: 1px solid #f85149; color: #ff7b72; }
-        .verify-unavailable { background-color: rgba(139, 148, 158, 0.18); border: 1px solid #8b949e; color: #c9d1d9; }
-        .verify-none { border: 1px dashed #8b949e; color: #8b949e; }
+        .verify-verified { background-color: rgba(46, 160, 67, 0.18); border: 1px solid #2ea043; color: var(--ok-text); }
+        .verify-disputed { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: var(--warn-text); }
+        .verify-refuted { background-color: rgba(248, 81, 73, 0.18); border: 1px solid #f85149; color: var(--bad-text); }
+        .verify-unavailable { background-color: rgba(139, 148, 158, 0.18); border: 1px solid var(--muted); color: var(--text); }
+        .verify-none { border: 1px dashed var(--muted); color: var(--muted); }
         .verify-counts { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-        .verify-counts-label { font-size: 12px; color: #8b949e; }
+        .verify-counts-label { font-size: 12px; color: var(--muted); }
         .finding-display-title { font-weight: 600; margin-bottom: 4px; }
-        .finding-reasoning { margin-top: 8px; font-size: 13px; color: #c9d1d9; }
-        .finding-reasoning summary { cursor: pointer; color: #8b949e; }
-        .verification-note { margin-top: 10px; padding: 8px 12px; border-left: 3px solid #8b949e; background-color: rgba(139, 148, 158, 0.08); font-size: 13px; color: #c9d1d9; }
+        .finding-reasoning { margin-top: 8px; font-size: 13px; color: var(--text); }
+        .finding-reasoning summary { cursor: pointer; color: var(--muted); }
+        .verification-note { margin-top: 10px; padding: 8px 12px; border-left: 3px solid var(--muted); background-color: rgba(139, 148, 158, 0.08); font-size: 13px; color: var(--text); }
         .verify-note-verified { border-left-color: #2ea043; }
         .verify-note-disputed { border-left-color: #d29922; }
         .verify-note-refuted { border-left-color: #f85149; }
-        .verification-note-label { font-weight: 600; color: #f0f6fc; font-size: 11px; letter-spacing: 0.02em; }
+        .verification-note-label { font-weight: 600; color: var(--strong); font-size: 11px; letter-spacing: 0.02em; }
         .verification-reason { margin-top: 4px; }
-        .sev-pill { color: #0d1117; background-color: #8b949e; min-width: 58px; text-align: center; }
+        .sev-pill { color: var(--on-accent); background-color: var(--muted); min-width: 58px; text-align: center; }
         .sev-critical, .sev-high { background-color: #f85149; }
         .sev-medium { background-color: #d29922; }
         .sev-low { background-color: #3fb950; }
-        .suggestions-section { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
-        .suggestions-section h2 { color: #c9d1d9; margin-top: 0; font-size: 18px; }
-        .fix-first { flex-basis: 100%; border-top: 1px solid #30363d; padding-top: 10px; margin-top: 2px; }
+        .suggestions-section { background-color: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
+        .suggestions-section h2 { color: var(--text); margin-top: 0; font-size: 18px; }
+        .fix-first { flex-basis: 100%; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 2px; }
         .fix-first-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 6px; }
-        .fix-first-title { font-size: 14px; font-weight: 600; color: #f0f6fc; }
-        .fix-first-sub { font-size: 12px; color: #8b949e; }
+        .fix-first-title { font-size: 14px; font-weight: 600; color: var(--strong); }
+        .fix-first-sub { font-size: 12px; color: var(--muted); }
         .fix-first-list { margin: 0; padding-left: 22px; }
         .next-action { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 13px; }
-        .fix-first-title-link { color: #58a6ff; text-decoration: none; }
+        .fix-first-title-link { color: var(--link); text-decoration: none; }
         .fix-first-title-link:hover { text-decoration: underline; }
-        .evidence-ref { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #8b949e; }
-        .record-row { padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .evidence-ref { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: var(--muted); }
+        .record-row { padding: 8px 0; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
         .record-row:last-child { border-bottom: none; }
         .record-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
-        .record-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #8b949e; }
+        .record-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: var(--muted); }
         .record-claim p { margin: 4px 0; }
-        .record-reason, .record-evidence { color: #a3a3a3; margin-top: 4px; }
-        .findings-index { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
-        .findings-index h2 { color: #c9d1d9; margin-top: 0; }
-        .findings-index h3 { color: #8b949e; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 6px; }
+        .record-reason, .record-evidence { color: var(--muted); margin-top: 4px; }
+        .findings-index { background-color: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
+        .findings-index h2 { color: var(--text); margin-top: 0; }
+        .findings-index h3 { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 6px; }
         .findings-list { list-style: none; margin: 0; padding: 0; }
-        .finding-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .finding-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
         .finding-row:last-child { border-bottom: none; }
-        .finding-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #58a6ff; text-decoration: none; }
+        .finding-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: var(--link); text-decoration: none; }
         .finding-location:hover { text-decoration: underline; }
-        .finding-title { color: #c9d1d9; }
+        .finding-title { color: var(--text); }
         .comment-counter:target { outline: 2px solid #d29922; outline-offset: 4px; border-radius: 4px; }
-        .review-details { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 20px; margin: 20px 0; color: #c9d1d9; }
-        .review-details > summary { cursor: pointer; font-weight: 600; color: #8b949e; }
-        .review-details h3 { color: #c9d1d9; font-size: 15px; margin: 16px 0 8px; }
-        .review-details h4 { color: #8b949e; font-size: 13px; margin: 12px 0 6px; }
-        .also-covers { margin-top: 8px; font-size: 13px; color: #8b949e; }
-        a.record-location { color: #58a6ff; text-decoration: none; }
+        .review-details { background-color: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 20px; margin: 20px 0; color: var(--text); }
+        .review-details > summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+        .review-details h3 { color: var(--text); font-size: 15px; margin: 16px 0 8px; }
+        .review-details h4 { color: var(--muted); font-size: 13px; margin: 12px 0 6px; }
+        .also-covers { margin-top: 8px; font-size: 13px; color: var(--muted); }
+        a.record-location { color: var(--link); text-decoration: none; }
         .checks-table-wrap { overflow-x: auto; }
         .checks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .checks-table th, .checks-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid #21262d; }
-        .checks-table th { color: #8b949e; font-weight: 600; }
+        .checks-table th, .checks-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+        .checks-table th { color: var(--muted); font-weight: 600; }
         .check-id, .check-evidence-path, .check-target { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
-        .check-evidence-path, .check-target { color: #8b949e; }
+        .check-evidence-path, .check-target { color: var(--muted); }
         .check-unresolved td { background-color: rgba(210, 153, 34, 0.08); }
-        .unresolved-marker { color: #e3b341; font-weight: 600; font-size: 11px; text-transform: uppercase; }
-        .generation-meta { font-size: 12px; color: #a3a3a3; margin: 2px 0; }
+        .unresolved-marker { color: var(--warn-text); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+        .generation-meta { font-size: 12px; color: var(--muted); margin: 2px 0; }
         .help-tooltip {
             position: fixed;
             bottom: 20px;
@@ -183,8 +203,28 @@
         .target-line { 
             background-color: rgba(255, 212, 59, 0.15); /* Highlight the commented line in amber */
         }
+        .comment-body a, .general-body a, .summary-body a { color: var(--link); }
+        .has-note { position: relative; cursor: help; }
+        .has-note:hover::after, .has-note:focus::after { content: attr(data-note); position: absolute; top: 100%; left: 0; margin-top: 6px; padding: 6px 10px; width: max-content; max-width: 280px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--panel); color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0; text-transform: none; white-space: normal; box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index: 6; }
+        .has-note:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
+        .help-tooltip-close { margin-left: 10px; padding: 0 4px; background: none; border: none; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; float: right; }
+        .help-tooltip[hidden] { display: none; }
+        .stage-table-wrap { overflow-x: auto; }
+        @media (max-width: 760px) {
+            .container { margin: 10px 8px; }
+            .verdict-block { padding: 10px 12px; }
+            .diff-file { font-size: 11px; overflow-x: auto; }
+            .line-num { width: 28px; padding: 2px 4px; }
+            .line-content { padding: 2px 6px; }
+            .comment-cell { padding: 6px; }
+            .comment-body { padding: 10px; }
+            .summary-section, .pr-description, .suggestions-section { padding: 10px 12px; }
+            .finding-row, .next-action { flex-wrap: wrap; }
+            .help-tooltip { display: none; }
+        }
     </style>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" media="(prefers-color-scheme: dark)" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" media="(prefers-color-scheme: light)" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 </head>
 <body>
@@ -198,7 +238,8 @@
     {{template "report-content" .}}
 </div>
 
-    <div class="help-tooltip">
+    <div class="help-tooltip" id="help-tooltip">
+      <button type="button" class="help-tooltip-close" aria-label="Dismiss">&times;</button>
       Press J to scroll to next review comment<br>
       Press K to scroll to previous review comment<br>
       Click the 🔗 on a comment to copy a link to it
@@ -210,6 +251,7 @@
         const totalComments = comments.length;
 
         let currentCommentIndex = -1;
+        const anchorIndex = {};
 
         // Document order is the numbering the report shows and the identity the
         // #comment-N deep links use, so the id and the label are assigned in the
@@ -230,17 +272,27 @@
                 textEl.textContent = `Comment ${number} of ${totalComments}`;
             }
 
+            if (counterDiv.id) {
+                anchorIndex[counterDiv.id] = index;
+            }
             const linkBtn = counterDiv.querySelector('.comment-link-btn');
             if (linkBtn) {
                 linkBtn.addEventListener('click', () => shareCommentLink(linkBtn, index));
             }
         });
 
-        function commentLinkFor(number) {
+        // A finding is linked by the anchor the findings index uses; a card
+        // without one (the summary) keeps its #comment-N link.
+        function fragmentFor(index) {
+            const counterDiv = comments[index].querySelector('.comment-counter');
+            return (counterDiv && counterDiv.id) ? counterDiv.id : `comment-${index + 1}`;
+        }
+
+        function commentLinkFor(fragment) {
             // Split rather than use location.origin + pathname: this keeps any
             // query string (?format=html, ?sha=…) and works for file:// copies,
             // where origin is "null".
-            return `${location.href.split('#')[0]}#comment-${number}`;
+            return `${location.href.split('#')[0]}#${fragment}`;
         }
 
         function copyToClipboard(text) {
@@ -286,14 +338,14 @@
         }
 
         function shareCommentLink(btn, index) {
-            const number = index + 1;
-            const url = commentLinkFor(number);
+            const fragment = fragmentFor(index);
+            const url = commentLinkFor(fragment);
             // replaceState, not location.hash: shows the shareable URL in the
             // address bar without scrolling the page or pushing history. Some
             // browsers throw SecurityError for replaceState on file:// — the
             // highlight and clipboard copy must still run there.
             try {
-                history.replaceState(null, '', `#comment-${number}`);
+                history.replaceState(null, '', `#${fragment}`);
             } catch (e) { /* address bar keeps the old fragment; copy still works */ }
             highlightComment(index);
             currentCommentIndex = index;
@@ -311,11 +363,12 @@
 
         function focusCommentFromHash(behavior) {
             const match = /^#comment-(\d+)$/.exec(location.hash);
-            if (!match) {
+            const anchored = anchorIndex[location.hash.slice(1)];
+            if (!match && anchored === undefined) {
                 highlightComment(-1);
                 return;
             }
-            const index = parseInt(match[1], 10) - 1;
+            const index = match ? parseInt(match[1], 10) - 1 : anchored;
             if (index < 0 || index >= comments.length) {
                 highlightComment(-1);
                 return;
@@ -348,6 +401,18 @@
                 }
             }
         });
+
+        const help = document.getElementById('help-tooltip');
+        const helpDismissedKey = 'prism-report-help-dismissed';
+        let helpDismissed = false;
+        try { helpDismissed = localStorage.getItem(helpDismissedKey) === '1'; } catch (e) { /* storage blocked: show the box */ }
+        if (help) {
+            help.hidden = helpDismissed;
+            help.querySelector('.help-tooltip-close').addEventListener('click', () => {
+                help.hidden = true;
+                try { localStorage.setItem(helpDismissedKey, '1'); } catch (e) { /* dismissed for this view only */ }
+            });
+        }
 
         if (window.hljs) {
             document.querySelectorAll('.comment-body pre code').forEach((block) => {

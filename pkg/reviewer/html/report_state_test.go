@@ -188,7 +188,7 @@ func TestGenerateReport_MergedClaimShowsUnderTheFindingThatCoversIt(t *testing.T
 		State: "merged", Inactive: true, MergedInto: "A-9", CommentBody: "CRITICAL claim folded into a finding that is not shown."})
 	report := renderLayoutFixture(t, in)
 
-	card := report[strings.Index(report, `id="finding-1"`):]
+	card := report[strings.Index(report, `id="finding-4"`):]
 	card = card[:strings.Index(card, `class="comment-counter"`)]
 	assert.Contains(t, card, `<div class="also-covers">Also covers: Restated nil dereference claim.</div>`)
 	assert.Equal(t, 1, strings.Count(report, `class="also-covers"`))
@@ -223,9 +223,9 @@ func TestGenerateReport_UnpublishedViewKeepsTheReviewersUpshotAndFixFirst(t *tes
 	assert.Contains(t, actions, "Fix first")
 	assert.Contains(t, actions, "The reviewer&#39;s pick of the findings below; the full list follows.")
 
-	first := strings.Index(actions, `href="#finding-1"`)
+	first := strings.Index(actions, `href="#finding-4"`)
 	second := strings.Index(actions, `href="#finding-8"`)
-	assert.Greater(t, first, -1, "A-1 resolves to the first finding")
+	assert.Greater(t, first, -1, "A-1 resolves to its card")
 	assert.Greater(t, second, first, "A-2 follows in priority order")
 	assert.Contains(t, actions, "Nil dereference when the config is missing.")
 	assert.Contains(t, actions, "Connection leak on error.")

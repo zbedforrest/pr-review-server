@@ -208,6 +208,6 @@ func TestGenerateReport_GroupsTheIndexByHowFindingsPost(t *testing.T) {
 	inline, notes, unverified := strings.Index(index, "<h3>Inline comments on the PR</h3>"), strings.Index(index, "<h3>Summary notes</h3>"), strings.Index(index, "<h3>Needs verification</h3>")
 	require.True(t, inline >= 0 && notes > inline && unverified > notes, "inline, then notes, then unverified")
 	critical, medium, low := strings.Index(index, "A critical inline."), strings.Index(index, "A medium inline."), strings.Index(index, "A low note.")
-	assert.True(t, inline < critical && critical < medium && medium < notes && notes < low, "severity order inside each group")
+	assert.True(t, inline < medium && medium < critical && critical < notes && notes < low, "page order inside each group")
 	assert.NotContains(t, index, "<h3>Confirmed</h3>")
 }
