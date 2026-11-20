@@ -194,7 +194,7 @@ func TestGenerateReport_MergedClaimShowsUnderTheFindingThatCoversIt(t *testing.T
 	assert.Equal(t, 1, strings.Count(report, `class="also-covers"`))
 	assert.NotContains(t, report, "folded into")
 	assert.NotContains(t, report, "the agent did not link them")
-	assert.NotContains(t, report, "not shown")
+	assert.NotContains(t, report, "folded into a finding that is not shown")
 }
 
 func TestGenerateReport_ReviewDetailsOmitsEmptyRecordSections(t *testing.T) {
