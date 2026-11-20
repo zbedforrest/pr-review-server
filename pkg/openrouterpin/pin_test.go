@@ -116,3 +116,21 @@ func TestNullProviderStillGetsPreferences(t *testing.T) {
 		t.Error("preferences without a match prefix count as enabled")
 	}
 }
+
+func TestOnlyRestrictsToTheListedEndpointsWithNoFallback(t *testing.T) {
+	up, s := echoUpstream(t)
+	h := Handler(up, Prefs{Match: "deepseek/", Only: []string{"fireworks/spot", "fireworks"}})
+	post(t, h, "/responses", `{"model":"deepseek/deepseek-v4.1-flash-1017","input":"x"}`)
+	post(t, h, "/responses", `{"model":"anthropic/claude-opus-5.5","input":"x"}`)
+
+	pinned, _ := s.at(0)
+	if got, _ := json.Marshal(pinned["provider"]); string(got) != `{"allow_fallbacks":false,"only":["fireworks/spot","fireworks"]}` {
+		t.Errorf("provider = %s", got)
+	}
+	if other, _ := s.at(1); other["provider"] != nil {
+		t.Errorf("a model outside the match was pinned: %v", other["provider"])
+	}
+	if !(Prefs{Match: "deepseek/", Only: []string{"fireworks"}}).Enabled() {
+		t.Error("only alone must enable the proxy")
+	}
+}

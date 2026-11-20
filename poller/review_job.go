@@ -327,8 +327,8 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	// The lite profiles pin their own model; admit it so they resolve on
 	// every deployment.
 	claudeModels = appendPolicyValue(claudeModels, runconfig.LiteModel)
-	openRouterModels = appendPolicyValue(openRouterModels, runconfig.EnsembleModel)
-	openRouterEfforts = appendPolicyValue(openRouterEfforts, "high")
+	openRouterModels = appendPolicyValue(openRouterModels, runconfig.LiteEnsembleModel())
+	openRouterEfforts = appendPolicyValue(openRouterEfforts, runconfig.LiteEnsembleEffort())
 	if backend == service.AgentBackendClaude {
 		claudeModels = appendPolicyValue(claudeModels, model)
 		claudeEfforts = appendPolicyValue(claudeEfforts, effort)
