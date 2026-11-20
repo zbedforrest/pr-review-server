@@ -64,6 +64,8 @@ type CommentView struct {
 	DisplayTitle string
 	DisplayBody  string
 	Detail       FindingDetail
+	// AlsoCovers titles the first-pass claims folded into this finding.
+	AlsoCovers []string
 	VerifyMark
 }
 
@@ -309,10 +311,8 @@ type RecordView struct {
 	Claim      string
 	Reason     string
 	Evidence   []string
-	MergedInto string
-	MergeBasis string
-	// MergedAnchor links to the absorbing finding when it is on the page.
-	MergedAnchor string
+	// Anchor links to the finding's card when the record describes one on the page.
+	Anchor string
 }
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
@@ -742,10 +742,183 @@ type ReportInput struct {
 // 0 when unknown.
 // Inline reports whether a finding clears the bar for an inline comment, so
 // the index can split what posts inline from what folds into the summary.
+// Title is the line GitHub lists a finding by, so the index reads the same;
+// nil or "" falls back to the report's own title. NotPublished says why the
+// review did not post ("the PR is a draft"), "" when it posted or will.
 type PublishView struct {
-	Withhold   func(types.LineComment) bool
-	Inline     func(types.LineComment) bool
-	Confidence int
+	Withhold     func(types.LineComment) bool
+	Inline       func(types.LineComment) bool
+	Confidence   int
+	Title        func(types.LineComment) string
+	NotPublished string
+}
+
+// known reports whether the view says what reached the PR; without it the
+// page is the reviewer's own account and keeps the reviewer's summary.
+func (v PublishView) known() bool {
+	return v.NotPublished != "" || v.Withhold != nil
+}
+
+func (v PublishView) titleOf(c types.LineComment) string {
+	if v.Title != nil {
+		if t := strings.TrimSpace(v.Title(c)); t != "" {
+			return truncateWords(t, findingTitleRunes)
+		}
+	}
+	return findingTitle(c)
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// postedLine states what reached the PR, from the publisher's own counts.
+func postedLine(v PublishView, inline, notes int, shortSHA string) string {
+	if !v.known() {
+		return ""
+	}
+	if v.NotPublished != "" {
+		return "Not posted to the PR: " + strings.TrimSuffix(v.NotPublished, ".") + "."
+	}
+	if v.Inline == nil && notes > 0 {
+		return "Posted " + plural(notes, "comment") + "."
+	}
+	var parts []string
+	if inline > 0 {
+		parts = append(parts, plural(inline, "inline comment"))
+	}
+	if notes > 0 {
+		parts = append(parts, plural(notes, "summary note"))
+	}
+	if len(parts) == 0 {
+		return "No comments posted on " + shortSHA + "."
+	}
+	return "Posted " + strings.Join(parts, " and ") + "."
+}
+
+const topFindingsShown = 3
+
+// topFindings is the short list under the posted line: the most severe
+// posted findings, dropped when it would repeat the whole index.
+func topFindings(posted []FixFirstItem) []FixFirstItem {
+	if len(posted) <= topFindingsShown {
+		return nil
+	}
+	top := append([]FixFirstItem(nil), posted...)
+	sort.SliceStable(top, func(i, j int) bool { return severityRank(top[i].Severity) < severityRank(top[j].Severity) })
+	return top[:topFindingsShown]
+}
+
+// idRefs rewrites the reviewer's internal finding labels, which mean nothing
+// to a reader: a label of a finding on the page becomes its location, any
+// other known label becomes "another finding".
+type idRefs struct {
+	re      *regexp.Regexp
+	anchors map[string]string
+	locs    map[string]string
+}
+
+const maxInternalIDLen = 12
+
+func newIDRefs(comments []types.LineComment) idRefs {
+	seen := map[string]bool{}
+	var ids []string
+	for _, c := range comments {
+		id := strings.TrimSpace(c.ID)
+		if id == "" || len(id) > maxInternalIDLen || !strings.ContainsAny(id, "0123456789") || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, regexp.QuoteMeta(id))
+	}
+	if len(ids) == 0 {
+		return idRefs{}
+	}
+	sort.Slice(ids, func(i, j int) bool { return len(ids[i]) > len(ids[j]) })
+	return idRefs{re: regexp.MustCompile(strings.Join(ids, "|")), anchors: map[string]string{}, locs: map[string]string{}}
+}
+
+func (r idRefs) show(id, anchor, loc string) {
+	if r.re != nil && id != "" {
+		r.anchors[id], r.locs[id] = anchor, loc
+	}
+}
+
+func idChar(b byte) bool {
+	return b == '-' || b == '_' || b == '/' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func (r idRefs) replace(s string, render func(id string) string) string {
+	if r.re == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range r.re.FindAllStringIndex(s, -1) {
+		if m[0] > 0 && idChar(s[m[0]-1]) || m[1] < len(s) && idChar(s[m[1]]) {
+			continue
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(render(s[m[0]:m[1]]))
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+const anotherFinding = "another finding"
+
+func (r idRefs) plain(s string) string {
+	return r.replace(s, func(id string) string {
+		if loc := r.locs[id]; loc != "" {
+			return loc
+		}
+		return anotherFinding
+	})
+}
+
+// markdown links shown labels to their cards and leaves code alone.
+func (r idRefs) markdown(s string) string {
+	if r.re == nil {
+		return s
+	}
+	return outsideCode(s, func(prose string) string {
+		return r.replace(prose, func(id string) string {
+			if loc := r.locs[id]; loc != "" {
+				return fmt.Sprintf("[`%s`](#%s)", loc, r.anchors[id])
+			}
+			return anotherFinding
+		})
+	})
+}
+
+// outsideCode applies fn to the text outside backtick spans and fences.
+func outsideCode(s string, fn func(string) string) string {
+	var b strings.Builder
+	for len(s) > 0 {
+		i := strings.IndexByte(s, '`')
+		if i < 0 {
+			b.WriteString(fn(s))
+			break
+		}
+		b.WriteString(fn(s[:i]))
+		j := i
+		for j < len(s) && s[j] == '`' {
+			j++
+		}
+		end := strings.Index(s[j:], s[i:j])
+		if end < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		stop := j + end + (j - i)
+		b.WriteString(s[i:stop])
+		s = s[stop:]
+	}
+	return b.String()
 }
 
 // GenerateReportFrom renders the review report from a ReportInput.
@@ -827,19 +1000,20 @@ func splitRecords(comments []types.LineComment) (active, records []types.LineCom
 }
 
 // recordViews turns the inactive records of one state into review-details rows.
-func recordViews(records []types.LineComment, state string, anchors map[string]string) []RecordView {
+func recordViews(records []types.LineComment, state string, refs idRefs) []RecordView {
 	var out []RecordView
 	for _, c := range records {
 		if c.State != state {
 			continue
 		}
 		v := RecordView{Severity: severityLabel(c.Importance), FilePath: c.FilePath, LineNumber: c.LineNumber,
-			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergeBasis: c.MergeBasis, MergedAnchor: anchors[c.MergedInto]}
+			Claim: payload.StripProvenanceNote(c.CommentBody)}
 		if c.Original != nil && strings.TrimSpace(c.Original.Comment) != "" {
 			v.Claim = c.Original.Comment
 		}
+		v.Claim = refs.markdown(v.Claim)
 		if c.Assessment != nil {
-			v.Reason = strings.TrimSpace(c.Assessment.Reason)
+			v.Reason = refs.plain(strings.TrimSpace(c.Assessment.Reason))
 			for _, e := range c.Assessment.Evidence {
 				v.Evidence = append(v.Evidence, location(e.File, e.Line))
 			}
@@ -849,19 +1023,34 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 	return out
 }
 
+// alsoCovers titles the merged records by the finding that absorbed them,
+// keyed the way MergedInto names it: an id or a file:line.
+func alsoCovers(records []types.LineComment, title func(types.LineComment) string) map[string][]string {
+	out := map[string][]string{}
+	for _, c := range records {
+		if c.State != stateMerged || c.MergedInto == "" {
+			continue
+		}
+		if t := title(c); t != "" {
+			out[c.MergedInto] = append(out[c.MergedInto], t)
+		}
+	}
+	return out
+}
+
 // fixFirst resolves the structured SUMMARY's priority ids against the
 // findings on the page; ids that name nothing rendered are skipped. The list
 // is the reviewer's short list, so it is dropped when it would repeat the full
 // findings index rather than shorten it.
-func fixFirst(ids []string, byID map[string]CommentView, totalFindings int) []FixFirstItem {
-	actions := fixFirstItems(ids, byID)
+func fixFirst(ids []string, byID map[string]CommentView, totalFindings int, title func(types.LineComment) string) []FixFirstItem {
+	actions := fixFirstItems(ids, byID, title)
 	if len(actions) >= totalFindings {
 		return nil
 	}
 	return actions
 }
 
-func fixFirstItems(ids []string, byID map[string]CommentView) []FixFirstItem {
+func fixFirstItems(ids []string, byID map[string]CommentView, title func(types.LineComment) string) []FixFirstItem {
 	var out []FixFirstItem
 	seen := map[string]bool{}
 	for _, id := range ids {
@@ -871,9 +1060,13 @@ func fixFirstItems(ids []string, byID map[string]CommentView) []FixFirstItem {
 			continue
 		}
 		seen[v.AnchorID] = true
-		out = append(out, FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment), VerifyMark: v.VerifyMark})
+		out = append(out, fixFirstItem(v, title(v.LineComment)))
 	}
 	return out
+}
+
+func fixFirstItem(v CommentView, title string) FixFirstItem {
+	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, VerifyMark: v.VerifyMark}
 }
 
 func generateReport(in ReportInput) (string, error) {
@@ -884,7 +1077,6 @@ func generateReport(in ReportInput) (string, error) {
 	var adjacentComments []CommentView
 	shown, withheld := withheldOut(in.Comments, in.Publish.Withhold)
 	activeComments, records := splitRecords(shown)
-	totalComments := len(activeComments)
 
 	verdict, upshot, suggestions := "", "", ""
 	var structured *types.SummaryBlock
@@ -895,44 +1087,83 @@ func generateReport(in ReportInput) (string, error) {
 	}
 	byID := map[string]CommentView{}
 	anchors := map[string]string{}
+	refs := newIDRefs(in.Comments)
 	verifyTally, verifyMarks := map[string]int{}, map[string]VerifyMark{}
 	showVerification := verificationRan(activeComments)
+	published := in.Publish.known()
+	splitByInline := in.Publish.Inline != nil && in.Publish.NotPublished == ""
 
+	// Cards are numbered before any is built so a body can link to a later
+	// one; a SUMMARY with nothing to say takes no card and no number.
+	counters := make([]int, len(activeComments))
+	summaryProse := map[int]string{}
+	totalComments, sawSummary := 0, false
 	for i, comment := range activeComments {
-		view := CommentView{
-			LineComment: comment,
-			Counter:     i + 1,
-			Total:       totalComments,
-		}
-		view.CommentBody = payload.StripProvenanceNote(comment.CommentBody)
-		if d := displayOf(comment); d != nil {
-			view.DisplayTitle, view.DisplayBody = strings.TrimSpace(d.Title), strings.TrimSpace(d.Body)
-		}
-		view.Detail = findingDetail(comment.FindingContract)
-
 		if comment.FilePath == "SUMMARY" {
-			// Only the first SUMMARY feeds the verdict and suggestions blocks;
-			// any later one keeps its text intact so nothing is lost.
+			prose := ""
 			switch {
-			case len(summaries) > 0:
-				summaries = append(summaries, SummaryView{CommentView: view, Prose: view.CommentBody})
+			case sawSummary:
+				prose = payload.StripProvenanceNote(comment.CommentBody)
 			case comment.Summary != nil:
 				structured = comment.Summary
 				verdict = summaryVerdictText[strings.ToLower(strings.TrimSpace(structured.Verdict))]
 				upshot = strings.TrimSpace(structured.Upshot)
-				summaries = append(summaries, SummaryView{CommentView: view, Prose: strings.TrimSpace(structured.Notes)})
+				prose = strings.TrimSpace(structured.Notes)
 			default:
-				parts := decomposeSummary(view.CommentBody)
+				parts := decomposeSummary(payload.StripProvenanceNote(comment.CommentBody))
 				verdict, suggestions = parts.Verdict, parts.Suggestions
-				summaries = append(summaries, SummaryView{CommentView: view, Prose: parts.Prose})
+				prose = parts.Prose
 			}
+			sawSummary = true
+			if strings.TrimSpace(prose) == "" {
+				continue
+			}
+			summaryProse[i] = prose
+		}
+		totalComments++
+		counters[i] = totalComments
+		if comment.FilePath == "SUMMARY" {
+			continue
+		}
+		anchor, loc := fmt.Sprintf("finding-%d", totalComments), location(comment.FilePath, comment.LineNumber)
+		if comment.ID != "" {
+			anchors[comment.ID] = anchor
+			refs.show(comment.ID, anchor, loc)
+		}
+		// References fall back to file:line when the finding has no id.
+		if _, taken := anchors[loc]; !taken {
+			anchors[loc] = anchor
+		}
+	}
+	covers := alsoCovers(records, in.Publish.titleOf)
+	var posted []FixFirstItem
+	var disputed []RecordView
+	inlinePosted, notesPosted := 0, 0
+
+	for i, comment := range activeComments {
+		if counters[i] == 0 {
+			continue
+		}
+		view := CommentView{
+			LineComment: comment,
+			Counter:     counters[i],
+			Total:       totalComments,
+		}
+		view.CommentBody = refs.markdown(payload.StripProvenanceNote(comment.CommentBody))
+		if d := displayOf(comment); d != nil {
+			view.DisplayTitle, view.DisplayBody = strings.TrimSpace(d.Title), refs.markdown(strings.TrimSpace(d.Body))
+		}
+		view.Detail = findingDetail(comment.FindingContract)
+
+		if comment.FilePath == "SUMMARY" {
+			summaries = append(summaries, SummaryView{CommentView: view, Prose: refs.markdown(summaryProse[i])})
 			continue
 		}
 
 		group, pill, class := findingGroupFor(comment)
 		counts[group]++
 		indexGroup := group
-		if group == groupConfirmed && in.Publish.Inline != nil {
+		if group == groupConfirmed && splitByInline {
 			indexGroup = groupNotes
 			if in.Publish.Inline(comment) {
 				indexGroup = groupInline
@@ -942,25 +1173,42 @@ func generateReport(in ReportInput) (string, error) {
 		view.StatusPill, view.StatusClass = pill, class
 		if showVerification {
 			view.VerifyMark = verifyMarkFor(comment.Verification)
+			for k, reason := range view.VerifyReasons {
+				view.VerifyReasons[k] = refs.plain(reason)
+			}
 			verifyTally[view.VerifyPill]++
 			verifyMarks[view.VerifyPill] = view.VerifyMark
 		}
+		loc := location(comment.FilePath, comment.LineNumber)
+		view.AlsoCovers = covers[comment.ID]
+		if comment.ID != loc && anchors[loc] == view.AnchorID {
+			view.AlsoCovers = append(view.AlsoCovers[:len(view.AlsoCovers):len(view.AlsoCovers)], covers[loc]...)
+		}
 		if comment.ID != "" {
 			byID[comment.ID] = view
-			anchors[comment.ID] = view.AnchorID
 		}
-		// References fall back to file:line when the finding has no id.
-		loc := comment.FilePath
-		if comment.LineNumber > 0 {
-			loc = fmt.Sprintf("%s:%d", comment.FilePath, comment.LineNumber)
-		}
-		if _, taken := anchors[loc]; !taken {
-			anchors[loc] = view.AnchorID
+		if anchors[loc] == view.AnchorID {
 			byID[loc] = view
 		}
+		title := in.Publish.titleOf(comment)
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
-			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment), VerifyMark: view.VerifyMark,
+			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, VerifyMark: view.VerifyMark,
+		}
+		switch {
+		case indexGroup == groupInline:
+			inlinePosted++
+			posted = append(posted, fixFirstItem(view, title))
+		case group != groupMechanical:
+			notesPosted++
+			posted = append(posted, fixFirstItem(view, title))
+		}
+		if a := comment.Assessment; a != nil {
+			d := RecordView{Severity: view.SeverityLabel(), FilePath: comment.FilePath, LineNumber: comment.LineNumber, Anchor: view.AnchorID, Reason: refs.plain(strings.TrimSpace(a.Reason))}
+			for _, e := range a.Evidence {
+				d.Evidence = append(d.Evidence, location(e.File, e.Line))
+			}
+			disputed = append(disputed, d)
 		}
 
 		if comment.FilePath == "GENERAL" {
@@ -1019,20 +1267,28 @@ func generateReport(in ReportInput) (string, error) {
 	if verdict == "" {
 		verdict = "Verdict: unavailable"
 	}
-	headline, headlineClass, agentVerdict := verdict, verdictClass(verdict), ""
-	if c := in.Publish.Confidence; c > 0 {
-		headline, headlineClass, agentVerdict = fmt.Sprintf("Merge confidence %d/5", c), confidenceClass(c), "Reviewer's "+strings.ToLower(verdict[:1])+verdict[1:]
-	}
-	var actions []FixFirstItem
-	if structured != nil {
-		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical])
-	}
-	rejected := recordViews(records, stateRejected, anchors)
-
 	shortCommitSHA := in.CommitSHA
 	if len(in.CommitSHA) > 7 {
 		shortCommitSHA = in.CommitSHA[:7]
 	}
+
+	headline, headlineClass := verdict, verdictClass(verdict)
+	if c := in.Publish.Confidence; c > 0 {
+		headline, headlineClass = fmt.Sprintf("Merge confidence %d/5", c), confidenceClass(c)
+	}
+	// The reviewer wrote its upshot and priorities before anything was held
+	// back, so a page that knows what posted states that instead.
+	var actions, top []FixFirstItem
+	switch {
+	case published:
+		upshot = ""
+		if in.Publish.NotPublished == "" {
+			top = topFindings(posted)
+		}
+	case structured != nil:
+		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical], in.Publish.titleOf)
+	}
+	rejected := recordViews(records, stateRejected, refs)
 
 	alerts := buildDeterministicAlerts(shown, in.Checks)
 	var pinnedAlerts []AlertView
@@ -1056,8 +1312,9 @@ func generateReport(in ReportInput) (string, error) {
 		Description          descriptionView
 		Verdict              string
 		VerdictClass         string
-		AgentVerdict         string
 		Upshot               string
+		PostedLine           string
+		TopFindings          []FixFirstItem
 		ConfirmedCount       int
 		UnverifiedCount      int
 		MechanicalCount      int
@@ -1068,7 +1325,7 @@ func generateReport(in ReportInput) (string, error) {
 		FixFirst             []FixFirstItem
 		Rejected             []RecordView
 		Unexamined           []RecordView
-		Merged               []RecordView
+		Disputed             []RecordView
 		Prompt               template.HTML
 		Files                []*DiffFile
 		Comments             map[string]map[int][]CommentView
@@ -1098,19 +1355,20 @@ func generateReport(in ReportInput) (string, error) {
 		Description:     description,
 		Verdict:         headline,
 		VerdictClass:    headlineClass,
-		AgentVerdict:    agentVerdict,
 		Upshot:          upshot,
+		PostedLine:      postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
+		TopFindings:     top,
 		ConfirmedCount:  counts[groupConfirmed],
 		UnverifiedCount: counts[groupNeedsCheck],
 		MechanicalCount: counts[groupMechanical],
 		RejectedCount:   len(rejected),
 		WithheldCount:   withheld,
 		VerifyCounts:    verifyCounts(verifyMarks, verifyTally),
-		Suggestions:     suggestions,
+		Suggestions:     refs.markdown(suggestions),
 		FixFirst:        actions,
 		Rejected:        rejected,
-		Unexamined:      recordViews(records, stateUnverified, anchors),
-		Merged:          recordViews(records, stateMerged, anchors),
+		Unexamined:      recordViews(records, stateUnverified, refs),
+		Disputed:        disputed,
 		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
 		// jQuery). It is NOT Markdown: escape it so it renders as literal text
 		// instead of being interpreted as HTML/math. CSS handles line wrapping.

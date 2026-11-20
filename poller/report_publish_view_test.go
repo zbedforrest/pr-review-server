@@ -9,6 +9,7 @@ import (
 
 	"pr-review-server/config"
 	"pr-review-server/db"
+	"pr-review-server/github"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/html"
 	"pr-review-server/pkg/reviewer/payload"
@@ -53,6 +54,8 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	assert.True(t, view.Inline(cases[0].c), "a gate-endorsed finding posts inline")
 	assert.False(t, view.Inline(cases[1].c), "an unverified finding does not")
 	assert.Equal(t, publisher.MergeConfidence(0, 1, false), view.Confidence, "only the endorsed MEDIUM counts; held ones do not")
+	assert.Equal(t, "Handle1 drops the error from Save, so a failed write reports success.", view.Title(cases[0].c), "the index is titled the way the PR lists the finding")
+	assert.Empty(t, view.Title(types.LineComment{FilePath: "z.go", CommentBody: "Unknown."}))
 
 	t.Setenv(ReportHideWithheldEnv, "off")
 	assert.Nil(t, p.reportPublishView(result).Withhold)
@@ -76,4 +79,62 @@ func TestWithPublishDecisionsFollowsWhatTheRoundDid(t *testing.T) {
 	assert.Equal(t, 4, after.Confidence)
 
 	assert.Equal(t, 3, withPublishDecisions(before, &publisher.Report{}).Confidence)
+}
+
+func TestReportPublishViewForSaysWhyTheRunWillNotPost(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	p := &Poller{cfg: &config.Config{}, db: database}
+	result := &service.ReviewResult{Comments: []types.LineComment{{FilePath: "a.go", LineNumber: 1, Importance: "LOW", CommentBody: "Unused."}}}
+	job := func(mutate func(*ReviewJob)) ReviewJob {
+		j := ReviewJob{}
+		j.PR.Author = "octocat"
+		mutate(&j)
+		return j
+	}
+
+	assert.Equal(t, notPublishedNotAsked, p.reportPublishViewFor(job(func(j *ReviewJob) { j.SkipPublish = true }), result).NotPublished)
+	assert.Equal(t, notPublishedDraft, p.reportPublishViewFor(job(func(j *ReviewJob) { j.PR.Draft = true }), result).NotPublished)
+	assert.Equal(t, p.reviewPublishBound(job(func(*ReviewJob) {})), p.reportPublishViewFor(job(func(*ReviewJob) {}), result).NotPublished == "",
+		"the report and the pipeline agree on whether the run posts")
+
+	t.Setenv(ReportHideWithheldEnv, "off")
+	assert.Empty(t, p.reportPublishViewFor(job(func(j *ReviewJob) { j.SkipPublish = true }), result).NotPublished, "a page that hides nothing makes no claim about posting")
+}
+
+func TestNotPublishedReason(t *testing.T) {
+	cases := map[string]string{
+		"":                       "",
+		publicationPosted:        "",
+		publicationAlreadyPosted: "an earlier run already posted a review of this commit",
+		publicationNotAllowed:    notPublishedAuthor,
+		publicationMuted:         "the author muted PRism on this pull request",
+		publicationUnavailable:   "posting is not set up on this server",
+		publicationSkippedPrefix + "pull request head moved past the reviewed commit": "the pull request head moved past the reviewed commit",
+		publicationFailedPrefix + "load ledger":                                       "posting to GitHub failed",
+	}
+	for outcome, want := range cases {
+		assert.Equal(t, want, notPublishedReason(outcome), outcome)
+	}
+}
+
+func TestRefreshReportAfterPublishRendersWhyNothingPosted(t *testing.T) {
+	var got []string
+	rr := &ReviewResult{RenderAfterPublish: func(rep *publisher.Report, notPublished string) []byte {
+		got = append(got, notPublished)
+		return nil
+	}}
+	p := &Poller{cfg: &config.Config{}}
+	pr := github.PullRequest{Owner: "acme", Repo: "widgets", Number: 1}
+
+	p.refreshReportAfterPublish(t.Context(), pr, rr, nil, publicationMuted, nil)
+	assert.Empty(t, got, "off by default")
+
+	t.Setenv(ReportPublishDecisionsEnv, "true")
+	p.refreshReportAfterPublish(t.Context(), pr, rr, nil, publicationMuted, nil)
+	p.refreshReportAfterPublish(t.Context(), pr, rr, nil, publicationPosted, nil)
+	p.refreshReportAfterPublish(t.Context(), pr, rr, nil, "", nil)
+	p.refreshReportAfterPublish(t.Context(), pr, rr, &publisher.Report{Decisions: &publisher.Decisions{}}, publicationPosted, nil)
+	assert.Equal(t, []string{"the author muted PRism on this pull request", ""}, got)
 }

@@ -781,15 +781,17 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		modelName = applyAgentUsage(result, agentOut)
 	}
 	result.ReportStages = reportStages(execution.Ensemble, agentOut, modelName)
-	view := p.reportPublishView(result)
+	view := p.reportPublishViewFor(execution.Job, result)
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, view)
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
 	return &ReviewResult{
 		HTMLContent: htmlContent,
-		RenderAfterPublish: func(rep *publisher.Report) []byte {
-			return service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, withPublishDecisions(view, rep))
+		RenderAfterPublish: func(rep *publisher.Report, notPublished string) []byte {
+			after := withPublishDecisions(view, rep)
+			after.NotPublished = notPublished
+			return service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, after)
 		},
 		CriticalCount: result.CriticalCount,
 		MediumCount:   result.MediumCount,
@@ -4245,16 +4247,16 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 		log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 	}
 	var published *publisher.Report
+	var publication string
 	if !job.SkipPublish {
-		var outcome string
-		published, outcome = p.publishGitHubReviewWith(prCtx, pr, sidecarBody, p.publishesDraft(job))
+		published, publication = p.publishGitHubReviewWith(prCtx, pr, sidecarBody, p.publishesDraft(job))
 		if job.TriggerSource == autoReviewTriggerSource {
-			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, outcome); err != nil {
-				log.Printf("[AUTO-REVIEW] run %s: could not record publication outcome %q: %v", job.RunID, outcome, err)
+			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, publication); err != nil {
+				log.Printf("[AUTO-REVIEW] run %s: could not record publication publication %q: %v", job.RunID, publication, err)
 			}
 		}
 	}
-	p.refreshReportAfterPublish(prCtx, pr, reviewResult, published, sidecarBody)
+	p.refreshReportAfterPublish(prCtx, pr, reviewResult, published, publication, sidecarBody)
 	confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 	p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
 	p.refreshGreptileStatus(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)

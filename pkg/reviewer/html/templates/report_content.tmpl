@@ -28,14 +28,12 @@
 <details class="finding-reasoning"><summary>Impact and how to verify</summary>
 {{template "finding-detail-line" .Detail.Impact}}{{template "finding-detail-line" .Detail.Uncertainty}}{{template "finding-verify" .}}
 </details>
-{{end}}{{end}}{{end}}
+{{end}}{{end}}{{if .AlsoCovers}}
+<div class="also-covers">Also covers:{{range $i, $t := .AlsoCovers}}{{if $i}};{{end}} {{$t}}{{end}}</div>
+{{end}}{{end}}
 
 {{define "verification-note"}}{{if .VerifyReasons}}
 <div class="verification-note verify-note-{{.VerifyClass}}"><span class="verification-note-label">{{.VerifyPill}}</span>{{range .VerifyReasons}}<div class="verification-reason">{{.}}</div>{{end}}</div>
-{{end}}{{end}}
-
-{{define "counterargument"}}{{if .Assessment}}
-<div class="counterargument"><span class="counterargument-label">Agent rejected:</span> {{.Assessment.Reason}}{{range .Assessment.Evidence}} <span class="evidence-ref">{{.File}}{{if .Line}}:{{.Line}}{{end}}</span>{{end}}</div>
 {{end}}{{end}}
 
 {{define "record-rows"}}
@@ -43,14 +41,32 @@
         <div class="record-row">
             <div class="record-meta">
                 <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
-                <span class="record-location">{{.Location}}</span>
+                {{if .Anchor}}<a class="record-location" href="#{{.Anchor}}">{{.Location}}</a>{{else}}<span class="record-location">{{.Location}}</span>{{end}}
             </div>
-            <div class="record-claim">{{.Claim | markdownify}}</div>
-            {{if .Reason}}<div class="record-reason">Rejected because: {{.Reason}}</div>{{end}}
+            {{if .Claim}}<div class="record-claim">{{.Claim | markdownify}}</div>{{end}}
+            {{if .Reason}}<div class="record-reason">{{if .Anchor}}Reviewer's objection{{else}}Rejected because{{end}}: {{.Reason}}</div>{{end}}
             {{if .Evidence}}<div class="record-evidence">Evidence:{{range .Evidence}} <span class="evidence-ref">{{.}}</span>{{end}}</div>{{end}}
-            {{if .MergedInto}}<div class="record-merged">folded into {{if .MergedAnchor}}<a href="#{{.MergedAnchor}}">{{.MergedInto}}</a>{{else}}{{.MergedInto}}{{end}}{{if .MergeBasis}} ({{if eq .MergeBasis "proximity"}}same file, nearby line; the agent did not link them{{else}}linked by the agent{{end}}){{end}}</div>{{end}}
         </div>
         {{end}}
+{{end}}
+
+{{define "short-list"}}
+        <div class="fix-first">
+            <div class="fix-first-head">
+                <span class="fix-first-title">{{.Title}}</span>
+                <span class="fix-first-sub">{{.Sub}}</span>
+            </div>
+            <ol class="fix-first-list">
+                {{range .Items}}
+                <li class="next-action">
+                    <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
+                    {{template "verify-pill" .}}
+                    <a class="fix-first-title-link" href="#{{.AnchorID}}">{{.Title}}</a>
+                    <span class="finding-location">{{.Location}}</span>
+                </li>
+                {{end}}
+            </ol>
+        </div>
 {{end}}
 
 {{define "report-content"}}
@@ -78,7 +94,7 @@
     <div class="verdict-block" data-verdict="{{.VerdictClass}}">
         <div class="verdict-main">
             <div class="verdict-text">{{.Verdict}}</div>
-            {{if .AgentVerdict}}<div class="verdict-agent">{{.AgentVerdict}}</div>{{end}}
+            {{if .PostedLine}}<div class="verdict-upshot">{{.PostedLine}}</div>{{end}}
             {{if .Upshot}}<div class="verdict-upshot">{{.Upshot}}</div>{{end}}
         </div>
         <div class="verdict-counts">
@@ -94,24 +110,8 @@
             {{range .VerifyCounts}}<span class="status-pill verify-pill verify-{{.Class}}">{{.Count}} {{.Label}}</span>{{end}}
         </div>
         {{end}}
-        {{if .FixFirst}}
-        <div class="fix-first">
-            <div class="fix-first-head">
-                <span class="fix-first-title">Fix first</span>
-                <span class="fix-first-sub">The reviewer's pick of the findings below; the full list follows.</span>
-            </div>
-            <ol class="fix-first-list">
-                {{range .FixFirst}}
-                <li class="next-action">
-                    <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
-                    {{template "verify-pill" .}}
-                    <a class="fix-first-title-link" href="#{{.AnchorID}}">{{.Title}}</a>
-                    <span class="finding-location">{{.Location}}</span>
-                </li>
-                {{end}}
-            </ol>
-        </div>
-        {{end}}
+        {{if .TopFindings}}{{template "short-list" (dict "Title" "Most severe" "Sub" "The full list follows." "Items" .TopFindings)}}{{end}}
+        {{if .FixFirst}}{{template "short-list" (dict "Title" "Fix first" "Sub" "The reviewer's pick of the findings below; the full list follows." "Items" .FixFirst)}}{{end}}
     </div>
 
     {{if .Suggestions}}
@@ -164,7 +164,6 @@
             {{template "comment-counter" .}}
             <div class="general-body">
                 {{template "finding-body" .}}
-                {{template "counterargument" .}}
                 {{template "verification-note" .}}
             </div>
         </div>
@@ -200,7 +199,6 @@
                         <div class="comment-body">
                             {{template "comment-counter" .}}
                             {{template "finding-body" .}}
-                            {{template "counterargument" .}}
                 {{template "verification-note" .}}
                         </div>
                     </div>
@@ -213,17 +211,20 @@
 
     <details class="review-details">
         <summary>Review details</summary>
+        {{if or .Rejected .Unexamined}}
+        <h3>Not posted</h3>
         {{if .Rejected}}
-        <h3>Rejected after investigation</h3>
+        <h4>Rejected after investigation</h4>
         {{template "record-rows" .Rejected}}
         {{end}}
         {{if .Unexamined}}
-        <h3>First-pass claims not examined</h3>
+        <h4>First-pass claims not examined</h4>
         {{template "record-rows" .Unexamined}}
         {{end}}
-        {{if .Merged}}
-        <h3>Merged claims</h3>
-        {{template "record-rows" .Merged}}
+        {{end}}
+        {{if .Disputed}}
+        <h3>Posted over the reviewer's objection</h3>
+        {{template "record-rows" .Disputed}}
         {{end}}
         {{if .Checks}}
         <h3>Required checks</h3>
