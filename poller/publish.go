@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/gcs"
 	"pr-review-server/github"
 	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
@@ -171,9 +174,27 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
 		r.BadgeBaseURL = base + "/badge"
-		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
+		r.DashboardURL = reportLink(base, pr)
 	}
 	return r
+}
+
+// ReportLinkPinnedEnv switches the summary's "Full report" link back to the
+// PR's latest review ("false", "0", "off", "no"); on by default.
+const ReportLinkPinnedEnv = "REPORT_LINK_PINNED"
+
+// reportLink points the summary at the report of the head it was posted
+// for, on the page route: that file outlives the PR row (closed PRs, new
+// heads) and signed-out readers get the login page instead of a bare 401.
+func reportLink(base string, pr github.PullRequest) string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ReportLinkPinnedEnv))) {
+	case "false", "0", "off", "no":
+	default:
+		if pr.CommitSHA != "" {
+			return base + "/reviews/" + url.PathEscape(gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA))
+		}
+	}
+	return fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
 }
 
 // optOutURL is the dashboard anchor where an author leaves the comment pilot.
