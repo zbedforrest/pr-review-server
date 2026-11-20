@@ -33,6 +33,7 @@ type GateReport struct {
 	Dropped    int            `json:"dropped"`
 	Demoted    int            `json:"demoted"`
 	Lowered    int            `json:"lowered,omitempty"`
+	Retried    bool           `json:"retried,omitempty"`
 	CostUSD    float64        `json:"cost_usd"`
 	DurationMS int64          `json:"duration_ms"`
 	Error      string         `json:"error,omitempty"`
@@ -191,6 +192,16 @@ func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.
 	if res != nil {
 		rep.CostUSD = res.CostUSD
 		gateSpent(day, res.CostUSD)
+	}
+	// A failed grader run posts every finding ungated, so one more try is
+	// worth it while the review's deadline still allows.
+	if err != nil && ctx.Err() == nil {
+		rep.Retried = true
+		res, err = run(ctx, cfg, p.agentSpawner, in)
+		if res != nil {
+			rep.CostUSD += res.CostUSD
+			gateSpent(day, res.CostUSD)
+		}
 	}
 	rep.DurationMS = time.Since(started).Milliseconds()
 	if err != nil {

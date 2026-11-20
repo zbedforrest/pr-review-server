@@ -238,3 +238,20 @@ func TestGateKeepsSeverityWhenAdjustingIsOff(t *testing.T) {
 		t.Errorf("CRITICAL became %q", f.review.Comments[1].Importance)
 	}
 }
+
+func TestGateRetriesOnceAfterAGraderError(t *testing.T) {
+	f := newGateFixture(t, gateModeOn, "alice", map[string]string{"a.go": "BAD"}, nil)
+	grade := gateRunFn
+	calls := 0
+	gateRunFn = func(ctx context.Context, cfg service.AgentConfig, s service.Spawner, in service.GradeAgentInput) (*service.GradeAgentResult, error) {
+		calls++
+		if calls == 1 {
+			return &service.GradeAgentResult{CostUSD: 0.1}, errors.New("read stdout: file already closed")
+		}
+		return grade(ctx, cfg, s, in)
+	}
+	rep := f.run()
+	if calls != 2 || rep.Status != "applied" || !rep.Retried || rep.Dropped != 1 || rep.CostUSD != 0.6 {
+		t.Fatalf("calls = %d, report = %+v", calls, rep)
+	}
+}
