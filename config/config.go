@@ -22,7 +22,7 @@ const (
 	// First-pass provider default models, mirroring the llm package defaults
 	// so this package stays dependency-light.
 	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
-	defaultFirstPassClaudeModel     = "claude-sonnet-5"
+	defaultFirstPassClaudeModel     = "claude-opus-5-5"
 	defaultFirstPassClaudeCodeModel = "claude-fable-5-1"
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
@@ -487,7 +487,7 @@ func Load() *Config {
 		QualityGate:                 qualityGateMode(os.Getenv("QUALITY_GATE")),
 		QualityGateBudgetUSD:        qualityGateBudget(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40)),
 		PublishRewrite:              stageMode("PUBLISH_REWRITE", os.Getenv("PUBLISH_REWRITE")),
-		PublishRewriteModel:         getEnvOrDefault("PUBLISH_REWRITE_MODEL", "claude-sonnet-5-5"),
+		PublishRewriteModel:         getEnvOrDefault("PUBLISH_REWRITE_MODEL", "claude-opus-5-5"),
 		PublishRewriteWallClockSec:  getPositiveEnvIntOrDefault("PUBLISH_REWRITE_WALL_CLOCK_SEC", 120),
 		PublishRewriteBudgetUSD:     max(getEnvFloatOrDefault("PUBLISH_REWRITE_DAILY_BUDGET_USD", 10), 0),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),

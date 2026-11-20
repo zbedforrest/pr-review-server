@@ -13,7 +13,7 @@ import (
 )
 
 const claudeStreamResponse = `event: message_start
-data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -46,7 +46,7 @@ func claudeTestClient(t *testing.T, requestBody *[]byte) *ClaudeClient {
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("ANTHROPIC_BASE_URL", server.URL)
-	return NewClaudeClient("test-key", "claude-sonnet-5", false)
+	return NewClaudeClient("test-key", "claude-opus-5-5", false)
 }
 
 func requireEphemeralCacheControl(t *testing.T, requestBody []byte) {
@@ -66,7 +66,7 @@ func requireEphemeralCacheControl(t *testing.T, requestBody []byte) {
 		} `json:"messages"`
 	}
 	require.NoError(t, json.Unmarshal(requestBody, &request))
-	assert.Equal(t, "claude-sonnet-5", request.Model)
+	assert.Equal(t, "claude-opus-5-5", request.Model)
 	assert.True(t, request.Stream)
 	require.Len(t, request.Messages, 1)
 	assert.Equal(t, "user", request.Messages[0].Role)

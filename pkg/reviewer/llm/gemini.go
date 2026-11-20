@@ -74,11 +74,7 @@ type Client struct {
 func NewClient(provider LLMProvider, apiKey string, useFlash bool, verbose bool) IClient {
 	switch provider {
 	case ProviderClaude:
-		model := DefaultClaudeModel
-		if useFlash {
-			model = ClaudeHaikuModel
-		}
-		return NewClaudeClient(apiKey, model, verbose)
+		return NewClaudeClient(apiKey, DefaultClaudeModel, verbose)
 	default:
 		return NewGeminiClient(apiKey, useFlash, verbose)
 	}

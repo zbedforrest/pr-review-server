@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	DefaultClaudeModel = "claude-sonnet-5"
-	ClaudeHaikuModel   = "claude-3-5-haiku-latest"
+	DefaultClaudeModel = "claude-opus-5-5"
 	ClaudeMaxTokens    = 32000
 )
 

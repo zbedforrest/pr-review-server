@@ -56,8 +56,8 @@ func testPolicy() Policy {
 			},
 			"claude": {
 				CredentialConfigured: true,
-				DefaultModel:         "claude-sonnet-5",
-				Models:               []string{"claude-sonnet-5"},
+				DefaultModel:         "claude-opus-5-5",
+				Models:               []string{"claude-opus-5-5"},
 			},
 			"claude-code": {
 				CredentialConfigured: true,
@@ -300,12 +300,12 @@ func TestResolveRejectsLimitsInsteadOfClamping(t *testing.T) {
 func TestResolveAppliesFirstPassProviderAndModelOverrides(t *testing.T) {
 	snapshot, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
 		Provider: ptr(" Claude "),
-		Model:    ptr(" claude-sonnet-5 "),
+		Model:    ptr(" claude-opus-5-5 "),
 	}}, testDefaults(), testPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := snapshot.Effective.FirstPass; got.Provider != "claude" || got.Model != "claude-sonnet-5" || got.Samples != 3 {
+	if got := snapshot.Effective.FirstPass; got.Provider != "claude" || got.Model != "claude-opus-5-5" || got.Samples != 3 {
 		t.Fatalf("first pass=%+v", got)
 	}
 	if snapshot.Sources["first_pass.provider"] != SourceRequest || snapshot.Sources["first_pass.model"] != SourceRequest {
@@ -323,7 +323,7 @@ func TestResolveDerivesProviderDefaultModelOnProviderSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Effective.FirstPass.Model != "claude-sonnet-5" {
+	if snapshot.Effective.FirstPass.Model != "claude-opus-5-5" {
 		t.Fatalf("model=%q want claude default", snapshot.Effective.FirstPass.Model)
 	}
 	if snapshot.Sources["first_pass.model"] != SourceDerived {
@@ -345,7 +345,7 @@ func TestResolveAcceptsAllowlistedModelForDefaultProvider(t *testing.T) {
 
 func TestResolveRejectsFirstPassModelOutsideProviderAllowlist(t *testing.T) {
 	cases := []Overrides{
-		{FirstPass: &FirstPassOverrides{Model: ptr("claude-sonnet-5")}},
+		{FirstPass: &FirstPassOverrides{Model: ptr("claude-opus-5-5")}},
 		{FirstPass: &FirstPassOverrides{Provider: ptr("claude"), Model: ptr("claude-opus-9")}},
 	}
 	for _, requested := range cases {

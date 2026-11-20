@@ -28,15 +28,15 @@ func TestNewClient_ModelSelection(t *testing.T) {
 		_ = NewClient(ProviderGemini, "dummy-key", true, false)
 	}, "NewClient should not panic when selecting the Gemini flash model")
 
-	// Test case 3: Selecting Claude Sonnet (useFlash = false)
+	// Test case 3: Selecting Claude (useFlash = false)
 	assert.NotPanics(t, func() {
 		_ = NewClient(ProviderClaude, "dummy-key", false, false)
-	}, "NewClient should not panic when selecting the Claude Sonnet model")
+	}, "NewClient should not panic when selecting the Claude model")
 
-	// Test case 4: Selecting Claude Haiku (useFlash = true)
+	// Test case 4: useFlash does not change the Claude model
 	assert.NotPanics(t, func() {
 		_ = NewClient(ProviderClaude, "dummy-key", true, false)
-	}, "NewClient should not panic when selecting the Claude Haiku model")
+	}, "NewClient should not panic with useFlash on the Claude provider")
 }
 
 // TestModelNameResolution verifies that the Gemini model names resolve from
