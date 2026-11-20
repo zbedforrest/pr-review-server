@@ -229,6 +229,9 @@ func verifyMarkFor(v *types.Verification) VerifyMark {
 	if v.Applied && v.LowValue && strings.TrimSpace(v.ValueReason) != "" {
 		m.VerifyReasons = append(m.VerifyReasons, "Not worth posting: "+strings.TrimSpace(v.ValueReason))
 	}
+	if from := severityLabel(v.GateLoweredFrom); v.GateApplied && from != "" {
+		m.VerifyReasons = append(m.VerifyReasons, fmt.Sprintf("Lowered from %s by the quality gate: the finding holds, the severity was overstated.", from))
+	}
 	// A GOOD or OK grade changes nothing on the page, and its free text often
 	// argues the pill ("medium is inflated"); only a BAD grade explains itself.
 	if v.GateApplied && v.Gate == "BAD" && strings.TrimSpace(v.GateReason) != "" {
