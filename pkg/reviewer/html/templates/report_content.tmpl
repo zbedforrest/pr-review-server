@@ -20,7 +20,7 @@
 {{define "finding-verify"}}{{if .Detail.VerifyCondition}}<p><strong>How to verify:</strong> {{.Detail.VerifyCondition}}. Expected: {{.Detail.VerifyExpected}}.</p>{{end}}{{end}}
 
 {{define "finding-body"}}{{if .DisplayBody}}
-<div class="finding-display"><div class="finding-display-title">{{.DisplayTitle}}</div>{{.DisplayBody | markdownify}}</div>
+<div class="finding-display"><div class="finding-display-title">{{.DisplayTitle | markdownInline}}</div>{{.DisplayBody | markdownify}}</div>
 <details class="finding-reasoning"><summary>Reasoning and how to verify</summary>
 {{template "finding-detail-line" .Detail.Impact}}{{.CommentBody | markdownify}}{{template "finding-detail-line" .Detail.Uncertainty}}{{template "finding-verify" .}}
 </details>
@@ -33,7 +33,7 @@
 {{end}}{{end}}
 
 {{define "verification-note"}}{{if .VerifyReasons}}
-<div class="verification-note verify-note-{{.VerifyClass}}"><span class="verification-note-label">{{.VerifyPill}}</span>{{range .VerifyReasons}}<div class="verification-reason">{{.}}</div>{{end}}</div>
+<div class="verification-note verify-note-{{.VerifyClass}}"><span class="verification-note-label">{{.VerifyPill}}</span>{{range .VerifyReasons}}<div class="verification-reason">{{. | markdownInline}}</div>{{end}}</div>
 {{end}}{{end}}
 
 {{define "record-rows"}}
@@ -44,7 +44,7 @@
                 {{if .Anchor}}<a class="record-location" href="#{{.Anchor}}">{{.Location}}</a>{{else}}<span class="record-location">{{.Location}}</span>{{end}}
             </div>
             {{if .Claim}}<div class="record-claim">{{.Claim | markdownify}}</div>{{end}}
-            {{if .Reason}}<div class="record-reason">{{if .Anchor}}Reviewer's objection{{else}}Rejected because{{end}}: {{.Reason}}</div>{{end}}
+            {{if .Reason}}<div class="record-reason">{{if .Anchor}}Reviewer's objection{{else}}Rejected because{{end}}: {{.Reason | markdownInline}}</div>{{end}}
             {{if .Evidence}}<div class="record-evidence">Evidence:{{range .Evidence}} <span class="evidence-ref">{{.}}</span>{{end}}</div>{{end}}
         </div>
         {{end}}

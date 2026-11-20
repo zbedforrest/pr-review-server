@@ -2,7 +2,6 @@ package html
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +11,14 @@ import (
 )
 
 func TestParseDiff(t *testing.T) {
-	diff := `diff --git a/file1.txt b/file1.txt
+	cases := []struct {
+		name string
+		diff string
+		want []*DiffFile
+	}{
+		{
+			name: "two files",
+			diff: `diff --git a/file1.txt b/file1.txt
 index e69de29..d00491f 100644
 --- a/file1.txt
 +++ b/file1.txt
@@ -28,54 +34,324 @@ index 6e9b81b..1b61971 100644
 -func main() {}
 +func main() { /* hello */ }
 
-`
-	expected := []*DiffFile{
-		{
-			Path: "file1.txt",
-			Lines: []Line{
-				{Type: "added", Content: "Hello World", OldLineNumber: 0, NewLineNumber: 1},
+`,
+			want: []*DiffFile{
+				{Path: "file1.txt", Lines: []Line{
+					{Type: "added", Content: "Hello World", NewLineNumber: 1},
+				}},
+				{Path: "file2.go", Lines: []Line{
+					{Type: "context", Content: "package main", OldLineNumber: 1, NewLineNumber: 1},
+					{Type: "context", Content: "", OldLineNumber: 2, NewLineNumber: 2},
+					{Type: "deleted", Content: "func main() {}", OldLineNumber: 3},
+					{Type: "added", Content: "func main() { /* hello */ }", NewLineNumber: 3},
+					{Type: "context", Content: "", OldLineNumber: 4, NewLineNumber: 4},
+				}},
 			},
 		},
 		{
-			Path: "file2.go",
-			Lines: []Line{
-				{Type: "context", Content: "package main", OldLineNumber: 1, NewLineNumber: 1},
-				{Type: "context", Content: "", OldLineNumber: 2, NewLineNumber: 2},
-				{Type: "deleted", Content: "func main() {}", OldLineNumber: 3, NewLineNumber: 0},
-				{Type: "added", Content: "func main() { /* hello */ }", OldLineNumber: 0, NewLineNumber: 3},
-				{Type: "context", Content: "", OldLineNumber: 4, NewLineNumber: 4},
+			name: "header-like lines inside a hunk are content",
+			diff: `diff --git a/notes.sql b/notes.sql
+index 1111111..2222222 100644
+--- a/notes.sql
++++ b/notes.sql
+@@ -1,4 +1,4 @@
+ select 1;
+--- old comment
+---- a/looks/like/a/header
++++ b/looks/like/a/header
++++counter;
+ index of things
+ select 2;
+`,
+			want: []*DiffFile{
+				{Path: "notes.sql", Lines: []Line{
+					{Type: "context", Content: "select 1;", OldLineNumber: 1, NewLineNumber: 1},
+					{Type: "deleted", Content: "-- old comment", OldLineNumber: 2},
+					{Type: "deleted", Content: "--- a/looks/like/a/header", OldLineNumber: 3},
+					{Type: "added", Content: "++ b/looks/like/a/header", NewLineNumber: 2},
+					{Type: "added", Content: "++counter;", NewLineNumber: 3},
+					{Type: "context", Content: "index of things", OldLineNumber: 4, NewLineNumber: 4},
+					{Type: "context", Content: "select 2;", OldLineNumber: 5, NewLineNumber: 5},
+				}},
+			},
+		},
+		{
+			name: "no-newline marker is not a line",
+			diff: `diff --git a/a.txt b/a.txt
+index 1111111..2222222 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,3 @@
+ one
+-two
+\ No newline at end of file
++two
++three
+\ No newline at end of file
+`,
+			want: []*DiffFile{
+				{Path: "a.txt", Lines: []Line{
+					{Type: "context", Content: "one", OldLineNumber: 1, NewLineNumber: 1},
+					{Type: "deleted", Content: "two", OldLineNumber: 2},
+					{Type: "added", Content: "two", NewLineNumber: 2},
+					{Type: "added", Content: "three", NewLineNumber: 3},
+				}},
+			},
+		},
+		{
+			name: "pre-hunk headers are skipped and counters reset per file",
+			diff: `diff --git a/first.txt b/first.txt
+index 1111111..2222222 100644
+--- a/first.txt
++++ b/first.txt
+@@ -40,2 +40,2 @@
+ keep
+-old
++new
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/fresh.txt b/fresh.txt
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/fresh.txt
+@@ -0,0 +1 @@
++hello
+`,
+			want: []*DiffFile{
+				{Path: "first.txt", Lines: []Line{
+					{Type: "gap", Content: "39 lines not shown"},
+					{Type: "context", Content: "keep", OldLineNumber: 40, NewLineNumber: 40},
+					{Type: "deleted", Content: "old", OldLineNumber: 41},
+					{Type: "added", Content: "new", NewLineNumber: 41},
+				}},
+				{Path: "run.sh"},
+				{Path: "fresh.txt", Lines: []Line{
+					{Type: "added", Content: "hello", NewLineNumber: 1},
+				}},
+			},
+		},
+		{
+			name: "deleted file takes the old path",
+			diff: `diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index 1111111..0000000
+--- a/gone.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-one
+-two
+`,
+			want: []*DiffFile{
+				{Path: "gone.txt", Lines: []Line{
+					{Type: "deleted", Content: "one", OldLineNumber: 1},
+					{Type: "deleted", Content: "two", OldLineNumber: 2},
+				}},
+			},
+		},
+		{
+			name: "renamed file takes the new path",
+			diff: `diff --git a/old/name.go b/new/name.go
+similarity index 90%
+rename from old/name.go
+rename to new/name.go
+index 1111111..2222222 100644
+--- a/old/name.go
++++ b/new/name.go
+@@ -1,2 +1,2 @@
+ package name
+-var a = 1
++var a = 2
+`,
+			want: []*DiffFile{
+				{Path: "new/name.go", Lines: []Line{
+					{Type: "context", Content: "package name", OldLineNumber: 1, NewLineNumber: 1},
+					{Type: "deleted", Content: "var a = 1", OldLineNumber: 2},
+					{Type: "added", Content: "var a = 2", NewLineNumber: 2},
+				}},
+			},
+		},
+		{
+			name: "paths with spaces, tabs after the path and quoting",
+			diff: "diff --git a/my docs/read me.md b/my docs/read me.md\n" +
+				"index 1111111..2222222 100644\n" +
+				"--- a/my docs/read me.md\t\n" +
+				"+++ b/my docs/read me.md\t\n" +
+				"@@ -1 +1 @@\n" +
+				"-a\n" +
+				"+b\n" +
+				"diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"\n" +
+				"index 1111111..2222222 100644\n" +
+				"--- \"a/caf\\303\\251.txt\"\n" +
+				"+++ \"b/caf\\303\\251.txt\"\n" +
+				"@@ -1 +1 @@\n" +
+				"-a\n" +
+				"+b\n",
+			want: []*DiffFile{
+				{Path: "my docs/read me.md", Lines: []Line{
+					{Type: "deleted", Content: "a", OldLineNumber: 1},
+					{Type: "added", Content: "b", NewLineNumber: 1},
+				}},
+				{Path: "café.txt", Lines: []Line{
+					{Type: "deleted", Content: "a", OldLineNumber: 1},
+					{Type: "added", Content: "b", NewLineNumber: 1},
+				}},
+			},
+		},
+		{
+			name: "files without lines are kept, first and last",
+			diff: `diff --git a/art/logo v2.png b/art/logo v2.png
+index 1111111..2222222 100644
+Binary files a/art/logo v2.png and b/art/logo v2.png differ
+diff --git a/mid.txt b/mid.txt
+index 1111111..2222222 100644
+--- a/mid.txt
++++ b/mid.txt
+@@ -1 +1 @@
+-a
++b
+diff --git a/old name.txt b/new name.txt
+similarity index 100%
+rename from old name.txt
+rename to new name.txt
+`,
+			want: []*DiffFile{
+				{Path: "art/logo v2.png"},
+				{Path: "mid.txt", Lines: []Line{
+					{Type: "deleted", Content: "a", OldLineNumber: 1},
+					{Type: "added", Content: "b", NewLineNumber: 1},
+				}},
+				{Path: "new name.txt"},
+			},
+		},
+		{
+			name: "two hunks with a one-line gap",
+			diff: `diff --git a/g.txt b/g.txt
+index 1111111..2222222 100644
+--- a/g.txt
++++ b/g.txt
+@@ -1,2 +1,3 @@
+ one
++one and a half
+ two
+@@ -4,2 +5,2 @@ section
+ four
+-five
++FIVE
+`,
+			want: []*DiffFile{
+				{Path: "g.txt", Lines: []Line{
+					{Type: "context", Content: "one", OldLineNumber: 1, NewLineNumber: 1},
+					{Type: "added", Content: "one and a half", NewLineNumber: 2},
+					{Type: "context", Content: "two", OldLineNumber: 2, NewLineNumber: 3},
+					{Type: "gap", Content: "1 line not shown"},
+					{Type: "context", Content: "four", OldLineNumber: 4, NewLineNumber: 5},
+					{Type: "deleted", Content: "five", OldLineNumber: 5},
+					{Type: "added", Content: "FIVE", NewLineNumber: 6},
+				}},
+			},
+		},
+		{
+			name: "adjacent hunks get no gap row",
+			diff: `diff --git a/h.txt b/h.txt
+--- a/h.txt
++++ b/h.txt
+@@ -1 +1 @@
+-a
++b
+@@ -2 +2 @@
+-c
++d
+`,
+			want: []*DiffFile{
+				{Path: "h.txt", Lines: []Line{
+					{Type: "deleted", Content: "a", OldLineNumber: 1},
+					{Type: "added", Content: "b", NewLineNumber: 1},
+					{Type: "deleted", Content: "c", OldLineNumber: 2},
+					{Type: "added", Content: "d", NewLineNumber: 2},
+				}},
+			},
+		},
+		{
+			name: "pure deletion hunk counts the lines before it",
+			diff: `diff --git a/d.txt b/d.txt
+--- a/d.txt
++++ b/d.txt
+@@ -5,2 +4,0 @@
+-five
+-six
+@@ -9 +7 @@
+-nine
++NINE
+`,
+			want: []*DiffFile{
+				{Path: "d.txt", Lines: []Line{
+					{Type: "gap", Content: "4 lines not shown"},
+					{Type: "deleted", Content: "five", OldLineNumber: 5},
+					{Type: "deleted", Content: "six", OldLineNumber: 6},
+					{Type: "gap", Content: "2 lines not shown"},
+					{Type: "deleted", Content: "nine", OldLineNumber: 9},
+					{Type: "added", Content: "NINE", NewLineNumber: 7},
+				}},
+			},
+		},
+		{
+			name: "malformed hunk header drops its lines without panicking",
+			diff: `diff --git a/m.txt b/m.txt
+--- a/m.txt
++++ b/m.txt
+@@
++lost
+@@ -x +y @@
++lost too
+@@ -3 +3 @@
+-c
++C
+`,
+			want: []*DiffFile{
+				{Path: "m.txt", Lines: []Line{
+					{Type: "gap", Content: "2 lines not shown"},
+					{Type: "deleted", Content: "c", OldLineNumber: 3},
+					{Type: "added", Content: "C", NewLineNumber: 3},
+				}},
 			},
 		},
 	}
 
-	actual := ParseDiff(diff)
-
-	if !reflect.DeepEqual(actual, expected) {
-		t.Errorf("ParseDiff() = %v, want %v", actual, expected)
-		// For more detailed output on mismatch
-		for i := range actual {
-			if i >= len(expected) {
-				t.Errorf("Extra file in actual: %+v", actual[i])
-				continue
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseDiff(tc.diff)
+			for _, f := range got {
+				f.Note = ""
 			}
-			if !reflect.DeepEqual(actual[i], expected[i]) {
-				t.Errorf("Mismatch in file %d:", i)
-				t.Errorf("  Actual:   %+v", actual[i])
-				t.Errorf("  Expected: %+v", expected[i])
-				for j := range actual[i].Lines {
-					if j >= len(expected[i].Lines) {
-						t.Errorf("    Extra line in actual: %+v", actual[i].Lines[j])
-						continue
-					}
-					if !reflect.DeepEqual(actual[i].Lines[j], expected[i].Lines[j]) {
-						t.Errorf("    Mismatch in line %d:", j)
-						t.Errorf("      Actual:   %+v", actual[i].Lines[j])
-						t.Errorf("      Expected: %+v", expected[i].Lines[j])
-					}
-				}
-			}
-		}
+			assert.Equal(t, tc.want, got)
+		})
 	}
+}
+
+func TestParseDiff_EmptyInput(t *testing.T) {
+	assert.Empty(t, ParseDiff(""))
+	assert.Empty(t, ParseDiff("not a diff\n@@ -1 +1 @@\n+orphan\n"))
+}
+
+func TestGenerateReport_HunkGapRendersAsSeparatorNotALine(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		Comments: []types.LineComment{{FilePath: "g.txt", LineNumber: 41, CommentBody: "Check this value."}},
+		Diff: `diff --git a/g.txt b/g.txt
+--- a/g.txt
++++ b/g.txt
+@@ -40,2 +40,2 @@
+ keep
+-old
++new
+`,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<div class="hunk-gap-text">39 lines not shown</div>`)
+	assert.NotContains(t, report, `<div class="line gap">`)
+	assert.NotContains(t, report, "<h2>Adjacent File-Specific Comments</h2>")
+	assert.Equal(t, 1, strings.Count(report, `<div class="comment-row">`))
 }
 
 func TestGenerateReport_WithGeneralComments(t *testing.T) {
@@ -365,11 +641,65 @@ func TestRenderMarkdown(t *testing.T) {
 		assert.Contains(t, out, "<em>italic</em>")
 	})
 
+	t.Run("leaves punctuation as written", func(t *testing.T) {
+		for _, text := range []string{
+			"43/44 checks passed",
+			"pass --model to override",
+			"wait... then 1/2 of it -- or more",
+		} {
+			assert.Contains(t, string(renderMarkdown(text)), text)
+		}
+		out := string(renderMarkdown(`it's the "right" flag`))
+		assert.Contains(t, out, "it&#39;s the &#34;right&#34; flag")
+	})
+
+	t.Run("keeps dollar signs literal", func(t *testing.T) {
+		out := string(renderMarkdown("set $A and $B before $$C$$ runs"))
+		assert.Contains(t, out, "set $A and $B before $$C$$ runs")
+	})
+
+	t.Run("keeps tables, fenced code, autolinks and strikethrough", func(t *testing.T) {
+		out := string(renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n\n```go\nx := 1\n```\n\n~~gone~~ https://example.com/x"))
+		assert.Contains(t, out, "<table>")
+		assert.Contains(t, out, "<pre><code")
+		assert.Contains(t, out, "<del>gone</del>")
+		assert.Contains(t, out, `href="https://example.com/x"`)
+	})
+
 	t.Run("renders code spans with their angle brackets escaped, not executed", func(t *testing.T) {
 		out := string(renderMarkdown("use the `<div>` element"))
 		assert.Contains(t, out, "<code>&lt;div&gt;</code>")
 		assert.NotContains(t, out, "<div>")
 	})
+}
+
+func TestRenderMarkdownInline(t *testing.T) {
+	assert.Equal(t, "Guard <code>cfg.Name</code> first", string(renderMarkdownInline("Guard `cfg.Name` first")))
+	assert.Equal(t, "plain", string(renderMarkdownInline("plain")))
+	assert.NotContains(t, string(renderMarkdownInline("a <script>alert(1)</script> b")), "<script>")
+
+	twoParagraphs := string(renderMarkdownInline("one\n\ntwo"))
+	assert.Contains(t, twoParagraphs, "<p>one</p>")
+	assert.Contains(t, twoParagraphs, "<p>two</p>")
+}
+
+func TestGenerateReport_RendersMarkdownInTitlesAndReasons(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		Comments: []types.LineComment{
+			{FilePath: "app.go", LineNumber: 13, Importance: "MEDIUM", CommentBody: "Original wording.",
+				Display: &types.Display{Title: "`Save` drops 43/44 errors", Body: "A failed Save returns nil."},
+				Verification: &types.Verification{Applied: true, Status: types.VerifyKeep,
+					Reason: "Confirmed in `store.go`; pass --strict to see it."}},
+			{FilePath: "app.go", LineNumber: 12, Importance: "LOW", Provenance: "first-pass", State: "rejected", Inactive: true,
+				CommentBody: "Rejected claim text.",
+				Assessment:  &types.Disposition{State: "rejected", Reason: "`cfg` is checked by the caller."}},
+		},
+		Diff: layoutFixtureDiff,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<div class="finding-display-title"><code>Save</code> drops 43/44 errors</div>`)
+	assert.Contains(t, report, "Confirmed in <code>store.go</code>; pass --strict to see it.</div>")
+	assert.Contains(t, report, "Rejected because: <code>cfg</code> is checked by the caller.</div>")
 }
 
 func TestGenerateContextLines_EscapesContent(t *testing.T) {
@@ -1010,4 +1340,35 @@ func TestGenerateReport_PageChrome(t *testing.T) {
 	assert.Contains(t, report, `class="help-tooltip-close"`)
 	assert.Contains(t, report, "Findings on this page: 5.")
 	assert.Contains(t, report, "anchorIndex[counterDiv.id] = index")
+}
+
+func TestParseDiff_NotesWhyAFileHasNoLines(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/font.woff2 b/font.woff2",
+		"new file mode 100644",
+		"index 0000000..1111111",
+		"Binary files /dev/null and b/font.woff2 differ",
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"new file mode 100644",
+		"index 0000000..e69de29",
+		"diff --git a/run.sh b/run.sh",
+		"old mode 100644",
+		"new mode 100755",
+		"diff --git a/a.go b/a.go",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/a.go",
+		"@@ -0,0 +1 @@",
+		"+package a",
+	}, "\n")
+	notes := map[string]string{}
+	for _, f := range ParseDiff(diff) {
+		notes[f.Path] = f.Note
+	}
+	assert.Equal(t, map[string]string{"font.woff2": noteBinary, "pkg/__init__.py": noteEmpty, "run.sh": noteNoContent, "a.go": ""}, notes)
+
+	report, err := GenerateReportFrom(ReportInput{Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `font.woff2 <span class="file-note">Binary file not shown</span>`)
+	assert.Equal(t, 3, strings.Count(report, `class="file-note"`))
 }

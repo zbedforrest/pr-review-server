@@ -8,12 +8,15 @@ import (
 	"html/template"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/gomarkdown/markdown"
+	mdhtml "github.com/gomarkdown/markdown/html"
+	"github.com/gomarkdown/markdown/parser"
 	"github.com/microcosm-cc/bluemonday"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
@@ -27,13 +30,32 @@ var templateFS embed.FS
 // cannot inject script into the review page.
 var mdSanitizer = bluemonday.UGCPolicy()
 
+// MathJax is left out so a dollar sign in prose stays a dollar sign.
+const mdExtensions = (parser.CommonExtensions | parser.AutoHeadingIDs) &^ parser.MathJax
+
 // renderMarkdown converts Markdown to HTML and sanitizes the result. Use this
-// for genuine Markdown fields. Do NOT use it for code or diff text — that is
+// for genuine Markdown fields. Do NOT use it for code or diff text: that is
 // not Markdown and must be passed through html.EscapeString instead.
 func renderMarkdown(s string) template.HTML {
-	unsafe := markdown.ToHTML([]byte(s), nil, nil)
+	// Flags 0 keeps Smartypants off, so fractions, dashes and quotes stay as written.
+	renderer := mdhtml.NewRenderer(mdhtml.RendererOptions{Flags: 0})
+	unsafe := markdown.ToHTML([]byte(s), parser.NewWithExtensions(mdExtensions), renderer)
 	return template.HTML(mdSanitizer.SanitizeBytes(unsafe))
 }
+
+// renderMarkdownInline renders s for a title or an inline slot: a lone
+// wrapping paragraph is dropped so the text gains no block margins.
+func renderMarkdownInline(s string) template.HTML {
+	out := strings.TrimSpace(string(renderMarkdown(s)))
+	if strings.HasPrefix(out, "<p>") && strings.HasSuffix(out, "</p>") && strings.Count(out, "<p>") == 1 {
+		out = strings.TrimSuffix(strings.TrimPrefix(out, "<p>"), "</p>")
+	}
+	return template.HTML(out)
+}
+
+// lineTypeGap marks a separator row for new-side lines the diff skips. It
+// carries no line numbers, so no comment can attach to it.
+const lineTypeGap = "gap"
 
 // Line represents a single line in a diff.
 type Line struct {
@@ -47,7 +69,15 @@ type Line struct {
 type DiffFile struct {
 	Path  string
 	Lines []Line
+	// Note says why a file has no lines to show.
+	Note string
 }
+
+const (
+	noteBinary    = "Binary file not shown"
+	noteEmpty     = "Empty file"
+	noteNoContent = "No content changes"
+)
 
 // CommentView is a wrapper for a comment with additional view-related data.
 // CommentBody has the legacy provenance preface stripped.
@@ -617,7 +647,10 @@ type ContextLine struct {
 	IsTarget   bool // True if this is the line being commented on
 }
 
-// ParseDiff parses a raw diff string into a structured format.
+var hunkHeaderRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// ParseDiff parses a raw unified diff into files of numbered lines. Each hunk
+// that starts past the previous one is preceded by a gap row.
 func ParseDiff(diff string) []*DiffFile {
 	var files []*DiffFile
 	lines := strings.Split(diff, "\n")
@@ -626,18 +659,14 @@ func ParseDiff(diff string) []*DiffFile {
 	}
 	var currentFile *DiffFile
 	var oldLine, newLine int
+	var oldPath string
+	inHunk := false
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git") {
-			if currentFile != nil {
-				files = append(files, currentFile)
-			}
-			parts := strings.Split(line, " ")
-			path := strings.TrimPrefix(parts[2], "a/")
-			currentFile = &DiffFile{Path: path}
-			continue
-		}
-		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "index") {
+		if strings.HasPrefix(line, "diff --git ") {
+			currentFile = &DiffFile{Path: diffGitPath(strings.TrimPrefix(line, "diff --git "))}
+			files = append(files, currentFile)
+			oldLine, newLine, oldPath, inHunk = 1, 1, "", false
 			continue
 		}
 		if currentFile == nil {
@@ -645,16 +674,47 @@ func ParseDiff(diff string) []*DiffFile {
 		}
 
 		if strings.HasPrefix(line, "@@") {
-			// Parse hunk header like "@@ -1,5 +1,6 @@"
-			parts := strings.Split(line, " ")
-			oldRange := strings.Split(strings.TrimPrefix(parts[1], "-"), ",")
-			newRange := strings.Split(strings.TrimPrefix(parts[2], "+"), ",")
-			_, _ = fmt.Sscanf(oldRange[0], "%d", &oldLine)
-			_, _ = fmt.Sscanf(newRange[0], "%d", &newLine)
+			oldStart, newStart, ok := parseHunkHeader(line)
+			inHunk = ok
+			if !ok {
+				continue
+			}
+			if gap := newStart - newLine; gap > 0 {
+				currentFile.Lines = append(currentFile.Lines, Line{
+					Type:    lineTypeGap,
+					Content: template.HTML(gapLabel(gap)),
+				})
+			}
+			oldLine, newLine = oldStart, newStart
+			continue
+		}
+
+		if !inHunk {
+			switch {
+			case strings.HasPrefix(line, "--- "):
+				oldPath = diffSidePath(strings.TrimPrefix(line, "--- "), "a/")
+			case strings.HasPrefix(line, "+++ "):
+				if path := diffSidePath(strings.TrimPrefix(line, "+++ "), "b/"); path != "" {
+					currentFile.Path = path
+				} else if oldPath != "" {
+					currentFile.Path = oldPath
+				}
+			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
+				currentFile.Note = noteBinary
+			case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "deleted file mode "):
+				if currentFile.Note == "" {
+					currentFile.Note = noteEmpty
+				}
+			case strings.HasPrefix(line, "rename to "):
+				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "rename to "))
+			case strings.HasPrefix(line, "copy to "):
+				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "copy to "))
+			}
 			continue
 		}
 
 		switch {
+		case strings.HasPrefix(line, "\\"):
 		case strings.HasPrefix(line, "+"):
 			currentFile.Lines = append(currentFile.Lines, Line{
 				Type:          "added",
@@ -680,11 +740,89 @@ func ParseDiff(diff string) []*DiffFile {
 			newLine++
 		}
 	}
-	if currentFile != nil && len(currentFile.Lines) > 0 {
-		files = append(files, currentFile)
+	for _, f := range files {
+		switch {
+		case len(f.Lines) > 0:
+			f.Note = ""
+		case f.Note == "":
+			f.Note = noteNoContent
+		}
 	}
 
 	return files
+}
+
+// parseHunkHeader returns the first old and new line a hunk's rows carry.
+func parseHunkHeader(line string) (oldStart, newStart int, ok bool) {
+	m := hunkHeaderRe.FindStringSubmatch(line)
+	if m == nil {
+		return 0, 0, false
+	}
+	oldStart, errOld := strconv.Atoi(m[1])
+	newStart, errNew := strconv.Atoi(m[3])
+	if errOld != nil || errNew != nil {
+		return 0, 0, false
+	}
+	// A zero count names the line before the change, not a line in the hunk.
+	if m[2] == "0" {
+		oldStart++
+	}
+	if m[4] == "0" {
+		newStart++
+	}
+	return oldStart, newStart, true
+}
+
+func gapLabel(n int) string {
+	if n == 1 {
+		return "1 line not shown"
+	}
+	return fmt.Sprintf("%d lines not shown", n)
+}
+
+// diffSidePath reads the path from a "---" or "+++" line, or "" for /dev/null.
+func diffSidePath(raw, prefix string) string {
+	if !strings.HasPrefix(raw, `"`) {
+		raw, _, _ = strings.Cut(raw, "\t")
+	}
+	path := unquoteGitPath(raw)
+	if path == "/dev/null" {
+		return ""
+	}
+	return strings.TrimPrefix(path, prefix)
+}
+
+// unquoteGitPath undoes git's C-style quoting of unusual paths.
+func unquoteGitPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, `"`) {
+		if unquoted, err := strconv.Unquote(raw); err == nil {
+			return unquoted
+		}
+	}
+	return raw
+}
+
+// diffGitPath reads the path from the rest of a "diff --git" line, for files
+// with no "+++" line (binary or mode-only changes).
+func diffGitPath(rest string) string {
+	// Unrenamed, both halves name the same path, which splits one with spaces.
+	if mid := len(rest) / 2; len(rest)%2 == 1 && rest[mid] == ' ' {
+		oldSide := strings.TrimPrefix(unquoteGitPath(rest[:mid]), "a/")
+		newSide := strings.TrimPrefix(unquoteGitPath(rest[mid+1:]), "b/")
+		if oldSide == newSide {
+			return newSide
+		}
+	}
+	for _, sep := range []string{` "b/`, " b/"} {
+		if i := strings.LastIndex(rest, sep); i >= 0 {
+			return strings.TrimPrefix(unquoteGitPath(rest[i+1:]), "b/")
+		}
+	}
+	if i := strings.LastIndex(rest, " "); i >= 0 {
+		return unquoteGitPath(rest[i+1:])
+	}
+	return unquoteGitPath(rest)
 }
 
 // CheckRecord is one required check as the report shows it in review
@@ -1479,9 +1617,8 @@ func generateReport(in ReportInput) (string, error) {
 	}
 
 	funcMap := template.FuncMap{
-		"markdownify": func(s string) template.HTML {
-			return renderMarkdown(s)
-		},
+		"markdownify":    renderMarkdown,
+		"markdownInline": renderMarkdownInline,
 		"dict": func(values ...interface{}) (map[string]interface{}, error) {
 			if len(values)%2 != 0 {
 				return nil, fmt.Errorf("dict expects an even number of arguments: got %d", len(values))
