@@ -8,12 +8,15 @@ import (
 	"html/template"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/gomarkdown/markdown"
+	mdhtml "github.com/gomarkdown/markdown/html"
+	"github.com/gomarkdown/markdown/parser"
 	"github.com/microcosm-cc/bluemonday"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
@@ -27,13 +30,32 @@ var templateFS embed.FS
 // cannot inject script into the review page.
 var mdSanitizer = bluemonday.UGCPolicy()
 
+// MathJax is left out so a dollar sign in prose stays a dollar sign.
+const mdExtensions = (parser.CommonExtensions | parser.AutoHeadingIDs) &^ parser.MathJax
+
 // renderMarkdown converts Markdown to HTML and sanitizes the result. Use this
-// for genuine Markdown fields. Do NOT use it for code or diff text — that is
+// for genuine Markdown fields. Do NOT use it for code or diff text: that is
 // not Markdown and must be passed through html.EscapeString instead.
 func renderMarkdown(s string) template.HTML {
-	unsafe := markdown.ToHTML([]byte(s), nil, nil)
+	// Flags 0 keeps Smartypants off, so fractions, dashes and quotes stay as written.
+	renderer := mdhtml.NewRenderer(mdhtml.RendererOptions{Flags: 0})
+	unsafe := markdown.ToHTML([]byte(s), parser.NewWithExtensions(mdExtensions), renderer)
 	return template.HTML(mdSanitizer.SanitizeBytes(unsafe))
 }
+
+// renderMarkdownInline renders s for a title or an inline slot: a lone
+// wrapping paragraph is dropped so the text gains no block margins.
+func renderMarkdownInline(s string) template.HTML {
+	out := strings.TrimSpace(string(renderMarkdown(s)))
+	if strings.HasPrefix(out, "<p>") && strings.HasSuffix(out, "</p>") && strings.Count(out, "<p>") == 1 {
+		out = strings.TrimSuffix(strings.TrimPrefix(out, "<p>"), "</p>")
+	}
+	return template.HTML(out)
+}
+
+// lineTypeGap marks a separator row for new-side lines the diff skips. It
+// carries no line numbers, so no comment can attach to it.
+const lineTypeGap = "gap"
 
 // Line represents a single line in a diff.
 type Line struct {
@@ -41,13 +63,22 @@ type Line struct {
 	Content       template.HTML
 	OldLineNumber int
 	NewLineNumber int
+	Truncated     bool
 }
 
 // DiffFile represents the diff for a single file.
 type DiffFile struct {
 	Path  string
 	Lines []Line
+	// Note says why a file has no lines to show.
+	Note string
 }
+
+const (
+	noteBinary    = "Binary file not shown"
+	noteEmpty     = "Empty file"
+	noteNoContent = "No content changes"
+)
 
 // CommentView is a wrapper for a comment with additional view-related data.
 // CommentBody has the legacy provenance preface stripped.
@@ -282,6 +313,7 @@ type FindingRow struct {
 	FilePath    string
 	LineNumber  int
 	Title       string
+	order       int
 	VerifyMark
 }
 
@@ -582,11 +614,31 @@ func buildDescription(body string) descriptionView {
 	if len(paragraphs) <= 1 && utf8.RuneCountInString(strings.TrimSpace(body)) <= descriptionPreviewRunes {
 		return descriptionView{Full: full}
 	}
-	preview := ""
-	if len(paragraphs) > 0 {
-		preview = truncateWords(strings.TrimSpace(paragraphs[0]), descriptionPreviewRunes)
-	}
+	preview := truncateWords(firstProseParagraph(body), descriptionPreviewRunes)
 	return descriptionView{Folded: true, Preview: renderMarkdown(preview), Full: full}
+}
+
+var (
+	htmlCommentRe  = regexp.MustCompile(`(?s)<!--.*?-->`)
+	headingLineRe  = regexp.MustCompile(`^\s*#{1,6}(\s|$)`)
+	emptyListingRe = regexp.MustCompile(`^[\s*_-]*(none|n/a)?[\s.*_-]*$`)
+)
+
+// firstProseParagraph is the first paragraph of a PR body that says
+// something: template headings, HTML comments and empty answers are skipped.
+func firstProseParagraph(body string) string {
+	for _, p := range splitParagraphs(htmlCommentRe.ReplaceAllString(body, "")) {
+		var kept []string
+		for _, line := range strings.Split(p, "\n") {
+			if !headingLineRe.MatchString(line) {
+				kept = append(kept, line)
+			}
+		}
+		if text := strings.TrimSpace(strings.Join(kept, "\n")); !emptyListingRe.MatchString(strings.ToLower(text)) {
+			return text
+		}
+	}
+	return ""
 }
 
 // ContextLine represents a line of code context for adjacent comments
@@ -596,7 +648,10 @@ type ContextLine struct {
 	IsTarget   bool // True if this is the line being commented on
 }
 
-// ParseDiff parses a raw diff string into a structured format.
+var hunkHeaderRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// ParseDiff parses a raw unified diff into files of numbered lines. Each hunk
+// that starts past the previous one is preceded by a gap row.
 func ParseDiff(diff string) []*DiffFile {
 	var files []*DiffFile
 	lines := strings.Split(diff, "\n")
@@ -605,18 +660,14 @@ func ParseDiff(diff string) []*DiffFile {
 	}
 	var currentFile *DiffFile
 	var oldLine, newLine int
+	var oldPath string
+	inHunk := false
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git") {
-			if currentFile != nil {
-				files = append(files, currentFile)
-			}
-			parts := strings.Split(line, " ")
-			path := strings.TrimPrefix(parts[2], "a/")
-			currentFile = &DiffFile{Path: path}
-			continue
-		}
-		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "index") {
+		if strings.HasPrefix(line, "diff --git ") {
+			currentFile = &DiffFile{Path: diffGitPath(strings.TrimPrefix(line, "diff --git "))}
+			files = append(files, currentFile)
+			oldLine, newLine, oldPath, inHunk = 1, 1, "", false
 			continue
 		}
 		if currentFile == nil {
@@ -624,46 +675,274 @@ func ParseDiff(diff string) []*DiffFile {
 		}
 
 		if strings.HasPrefix(line, "@@") {
-			// Parse hunk header like "@@ -1,5 +1,6 @@"
-			parts := strings.Split(line, " ")
-			oldRange := strings.Split(strings.TrimPrefix(parts[1], "-"), ",")
-			newRange := strings.Split(strings.TrimPrefix(parts[2], "+"), ",")
-			_, _ = fmt.Sscanf(oldRange[0], "%d", &oldLine)
-			_, _ = fmt.Sscanf(newRange[0], "%d", &newLine)
+			oldStart, newStart, ok := parseHunkHeader(line)
+			inHunk = ok
+			if !ok {
+				continue
+			}
+			if gap := newStart - newLine; gap > 0 {
+				currentFile.Lines = append(currentFile.Lines, Line{
+					Type:    lineTypeGap,
+					Content: template.HTML(gapLabel(gap)),
+				})
+			}
+			oldLine, newLine = oldStart, newStart
+			continue
+		}
+
+		if !inHunk {
+			switch {
+			case strings.HasPrefix(line, "--- "):
+				oldPath = diffSidePath(strings.TrimPrefix(line, "--- "), "a/")
+			case strings.HasPrefix(line, "+++ "):
+				if path := diffSidePath(strings.TrimPrefix(line, "+++ "), "b/"); path != "" {
+					currentFile.Path = path
+				} else if oldPath != "" {
+					currentFile.Path = oldPath
+				}
+			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
+				currentFile.Note = noteBinary
+			case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "deleted file mode "):
+				if currentFile.Note == "" {
+					currentFile.Note = noteEmpty
+				}
+			case strings.HasPrefix(line, "rename to "):
+				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "rename to "))
+			case strings.HasPrefix(line, "copy to "):
+				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "copy to "))
+			}
 			continue
 		}
 
 		switch {
+		case strings.HasPrefix(line, "\\"):
 		case strings.HasPrefix(line, "+"):
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "added",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, "+"))),
-				NewLineNumber: newLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("added", strings.TrimPrefix(line, "+"), 0, newLine))
 			newLine++
 		case strings.HasPrefix(line, "-"):
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "deleted",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, "-"))),
-				OldLineNumber: oldLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("deleted", strings.TrimPrefix(line, "-"), oldLine, 0))
 			oldLine++
 		default:
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "context",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, " "))),
-				OldLineNumber: oldLine,
-				NewLineNumber: newLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("context", strings.TrimPrefix(line, " "), oldLine, newLine))
 			oldLine++
 			newLine++
 		}
 	}
-	if currentFile != nil && len(currentFile.Lines) > 0 {
-		files = append(files, currentFile)
+	for _, f := range files {
+		switch {
+		case len(f.Lines) > 0:
+			f.Note = ""
+		case f.Note == "":
+			f.Note = noteNoContent
+		}
 	}
 
 	return files
+}
+
+// Page weight limits: the longest diff line shown, and how much line content
+// uncommented files may add to one page.
+const (
+	maxLineBytes    = 2000
+	diffBudgetBytes = 400 * 1024
+	// lineMarkupBytes is roughly what the row markup around one diff line
+	// weighs; short lines are mostly markup.
+	lineMarkupBytes = 250
+)
+
+// diffLine builds a diff row, cutting an overlong line before it is escaped
+// so the cut never lands inside an HTML entity.
+func diffLine(kind, text string, oldLine, newLine int) Line {
+	text, truncated := truncateLine(text)
+	return Line{
+		Type:          kind,
+		Content:       template.HTML(html.EscapeString(text)),
+		OldLineNumber: oldLine,
+		NewLineNumber: newLine,
+		Truncated:     truncated,
+	}
+}
+
+// truncateLine cuts text to at most maxLineBytes without splitting a rune.
+func truncateLine(text string) (string, bool) {
+	if len(text) <= maxLineBytes {
+		return text, false
+	}
+	cut := maxLineBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut], true
+}
+
+const (
+	fileOpen      = "open"
+	fileCollapsed = "collapsed"
+	fileSkipped   = "skipped"
+)
+
+// FileView is a diff file with how the page shows it.
+type FileView struct {
+	*DiffFile
+	Mode      string
+	LineCount int
+}
+
+func (f FileView) Collapsed() bool { return f.Mode == fileCollapsed }
+
+func (f FileView) Skipped() bool { return f.Mode == fileSkipped }
+
+// LineLabel is the file's size in diff lines, gap rows excluded.
+func (f FileView) LineLabel() string {
+	if f.LineCount == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", f.LineCount)
+}
+
+var lockfileNames = map[string]bool{
+	"package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true, "go.sum": true, "Cargo.lock": true,
+	"poetry.lock": true, "Pipfile.lock": true, "composer.lock": true, "Gemfile.lock": true,
+}
+
+var generatedDirs = map[string]bool{"vendor": true, "node_modules": true, "dist": true, "build": true}
+
+var generatedSuffixes = []string{".min.js", ".min.css", ".map", ".ipynb", ".pb.go", "_pb2.py", ".snap", ".svg"}
+
+// isGeneratedPath reports whether a path names a lockfile, a vendored or
+// built tree, or another file nobody reviews line by line.
+func isGeneratedPath(path string) bool {
+	segments := strings.Split(path, "/")
+	name := segments[len(segments)-1]
+	if lockfileNames[name] {
+		return true
+	}
+	for _, dir := range segments[:len(segments)-1] {
+		if generatedDirs[dir] {
+			return true
+		}
+	}
+	for _, suffix := range generatedSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// planFiles decides how each diff file is shown, in diff order. A file with
+// comments is always open and whole. Of the rest, generated files and those
+// that no longer fit the budget are listed without their diff, and the others
+// are collapsed. Commented files are charged to the budget first.
+func planFiles(files []*DiffFile, comments map[string]map[int][]CommentView, budget int) []FileView {
+	views := make([]FileView, len(files))
+	sizes := make([]int, len(files))
+	for i, f := range files {
+		views[i] = FileView{DiffFile: f, Mode: fileCollapsed}
+		for _, line := range f.Lines {
+			if line.Type == lineTypeGap {
+				continue
+			}
+			views[i].LineCount++
+			sizes[i] += len(line.Content) + lineMarkupBytes
+			if line.Truncated {
+				views[i].Mode = fileSkipped
+			}
+		}
+		switch {
+		case f.Note != "":
+			views[i].Mode = fileOpen
+		case len(comments[f.Path]) > 0:
+			views[i].Mode = fileOpen
+			budget -= sizes[i]
+		case isGeneratedPath(f.Path):
+			views[i].Mode = fileSkipped
+		}
+	}
+	for i := range views {
+		if views[i].Mode != fileCollapsed {
+			continue
+		}
+		if sizes[i] > budget {
+			views[i].Mode = fileSkipped
+			continue
+		}
+		budget -= sizes[i]
+	}
+	return views
+}
+
+// parseHunkHeader returns the first old and new line a hunk's rows carry.
+func parseHunkHeader(line string) (oldStart, newStart int, ok bool) {
+	m := hunkHeaderRe.FindStringSubmatch(line)
+	if m == nil {
+		return 0, 0, false
+	}
+	oldStart, errOld := strconv.Atoi(m[1])
+	newStart, errNew := strconv.Atoi(m[3])
+	if errOld != nil || errNew != nil {
+		return 0, 0, false
+	}
+	// A zero count names the line before the change, not a line in the hunk.
+	if m[2] == "0" {
+		oldStart++
+	}
+	if m[4] == "0" {
+		newStart++
+	}
+	return oldStart, newStart, true
+}
+
+func gapLabel(n int) string {
+	if n == 1 {
+		return "1 line not shown"
+	}
+	return fmt.Sprintf("%d lines not shown", n)
+}
+
+// diffSidePath reads the path from a "---" or "+++" line, or "" for /dev/null.
+func diffSidePath(raw, prefix string) string {
+	if !strings.HasPrefix(raw, `"`) {
+		raw, _, _ = strings.Cut(raw, "\t")
+	}
+	path := unquoteGitPath(raw)
+	if path == "/dev/null" {
+		return ""
+	}
+	return strings.TrimPrefix(path, prefix)
+}
+
+// unquoteGitPath undoes git's C-style quoting of unusual paths.
+func unquoteGitPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, `"`) {
+		if unquoted, err := strconv.Unquote(raw); err == nil {
+			return unquoted
+		}
+	}
+	return raw
+}
+
+// diffGitPath reads the path from the rest of a "diff --git" line, for files
+// with no "+++" line (binary or mode-only changes).
+func diffGitPath(rest string) string {
+	// Unrenamed, both halves name the same path, which splits one with spaces.
+	if mid := len(rest) / 2; len(rest)%2 == 1 && rest[mid] == ' ' {
+		oldSide := strings.TrimPrefix(unquoteGitPath(rest[:mid]), "a/")
+		newSide := strings.TrimPrefix(unquoteGitPath(rest[mid+1:]), "b/")
+		if oldSide == newSide {
+			return newSide
+		}
+	}
+	for _, sep := range []string{` "b/`, " b/"} {
+		if i := strings.LastIndex(rest, sep); i >= 0 {
+			return strings.TrimPrefix(unquoteGitPath(rest[i+1:]), "b/")
+		}
+	}
+	if i := strings.LastIndex(rest, " "); i >= 0 {
+		return unquoteGitPath(rest[i+1:])
+	}
+	return unquoteGitPath(rest)
 }
 
 // CheckRecord is one required check as the report shows it in review
@@ -716,7 +995,6 @@ type ReportInput struct {
 	PRURL           string
 	PRTitle         string
 	PRBody          string
-	Prompt          string
 	CommitSHA       string
 	ModelName       string
 	PromptTokens    int32
@@ -1078,6 +1356,69 @@ func fixFirstItems(ids []string, byID map[string]CommentView, title func(types.L
 	return out
 }
 
+// Page sections in the order the layout renders their cards.
+const (
+	sectionNone = iota
+	sectionSummary
+	sectionGeneral
+	sectionDiff
+	sectionAdjacent
+)
+
+// cardPlace is where one active comment's card lands on the page.
+type cardPlace struct {
+	index, section, file, line int
+}
+
+// diffPlace finds the diff file a finding renders under: whole-file findings
+// under the header, the rest under a new-side line (a deleted line carries
+// no new-side number, so a finding there falls to the adjacent section).
+func diffPlace(files []*DiffFile, c types.LineComment) (int, bool) {
+	for i, f := range files {
+		if f.Path != c.FilePath {
+			continue
+		}
+		if c.LineNumber == 0 {
+			return i, true
+		}
+		for _, line := range f.Lines {
+			if line.NewLineNumber == c.LineNumber {
+				return i, true
+			}
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// numberCards numbers the cards in page order; a place with no card gets 0.
+func numberCards(places []cardPlace) (counters []int, total int) {
+	ordered := make([]cardPlace, 0, len(places))
+	for _, p := range places {
+		if p.section != sectionNone {
+			ordered = append(ordered, p)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.section != b.section {
+			return a.section < b.section
+		}
+		if a.section != sectionDiff {
+			return false
+		}
+		if a.file != b.file {
+			return a.file < b.file
+		}
+		return a.line < b.line
+	})
+	counters = make([]int, len(places))
+	for n, p := range ordered {
+		counters[p.index] = n + 1
+	}
+	return counters, len(ordered)
+}
+
 func fixFirstItem(v CommentView, title string) FixFirstItem {
 	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, order: v.Counter, VerifyMark: v.VerifyMark}
 }
@@ -1107,12 +1448,16 @@ func generateReport(in ReportInput) (string, error) {
 	splitByInline := in.Publish.Inline != nil && in.Publish.NotPublished == ""
 
 	// Cards are numbered before any is built so a body can link to a later
-	// one; a SUMMARY with nothing to say takes no card and no number.
-	counters := make([]int, len(activeComments))
+	// one, and in the order the page lays them out so the index, the deep
+	// links and the J/K order agree. A SUMMARY with nothing to say takes no
+	// card and no number.
 	summaryProse := map[int]string{}
-	totalComments, sawSummary := 0, false
+	places := make([]cardPlace, len(activeComments))
+	sawSummary := false
 	for i, comment := range activeComments {
-		if comment.FilePath == "SUMMARY" {
+		places[i] = cardPlace{index: i, section: sectionAdjacent}
+		switch {
+		case comment.FilePath == "SUMMARY":
 			prose := ""
 			switch {
 			case sawSummary:
@@ -1128,17 +1473,26 @@ func generateReport(in ReportInput) (string, error) {
 				prose = parts.Prose
 			}
 			sawSummary = true
+			places[i].section = sectionSummary
 			if strings.TrimSpace(prose) == "" {
+				places[i].section = sectionNone
 				continue
 			}
 			summaryProse[i] = prose
+		case comment.FilePath == "GENERAL":
+			places[i].section = sectionGeneral
+		default:
+			if file, ok := diffPlace(diffFiles, comment); ok {
+				places[i].section, places[i].file, places[i].line = sectionDiff, file, comment.LineNumber
+			}
 		}
-		totalComments++
-		counters[i] = totalComments
-		if comment.FilePath == "SUMMARY" {
+	}
+	counters, totalComments := numberCards(places)
+	for i, comment := range activeComments {
+		if counters[i] == 0 || comment.FilePath == "SUMMARY" {
 			continue
 		}
-		anchor, loc := fmt.Sprintf("finding-%d", totalComments), location(comment.FilePath, comment.LineNumber)
+		anchor, loc := fmt.Sprintf("finding-%d", counters[i]), location(comment.FilePath, comment.LineNumber)
 		if comment.ID != "" {
 			anchors[comment.ID] = anchor
 			refs.show(comment.ID, anchor, loc)
@@ -1206,7 +1560,7 @@ func generateReport(in ReportInput) (string, error) {
 		title := in.Publish.titleOf(comment)
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
-			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, VerifyMark: view.VerifyMark,
+			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, order: view.Counter, VerifyMark: view.VerifyMark,
 		}
 		switch {
 		case indexGroup == groupInline:
@@ -1230,30 +1584,7 @@ func generateReport(in ReportInput) (string, error) {
 			continue
 		}
 
-		canDisplayInline := false
-		for _, diffFile := range diffFiles {
-			if diffFile.Path != comment.FilePath {
-				continue
-			}
-			if comment.LineNumber == 0 {
-				// Whole-file finding: displayable whenever the file is in
-				// the diff. Must not match per-line, since added/deleted
-				// lines carry a zero Old/NewLineNumber.
-				canDisplayInline = true
-				break
-			}
-			// Comments render under new-side lines only, so a match on a
-			// deleted line alone goes to the adjacent section instead.
-			for _, line := range diffFile.Lines {
-				if line.NewLineNumber == comment.LineNumber {
-					canDisplayInline = true
-					break
-				}
-			}
-			break
-		}
-
-		if canDisplayInline {
+		if places[i].section == sectionDiff {
 			if _, ok := commentsByFile[comment.FilePath]; !ok {
 				commentsByFile[comment.FilePath] = make(map[int][]CommentView)
 			}
@@ -1272,7 +1603,7 @@ func generateReport(in ReportInput) (string, error) {
 	var findingGroups []FindingGroup
 	for _, name := range indexGroupOrder {
 		if g := groups[name]; len(g.Rows) > 0 {
-			sort.SliceStable(g.Rows, func(i, j int) bool { return severityRank(g.Rows[i].Severity) < severityRank(g.Rows[j].Severity) })
+			sort.SliceStable(g.Rows, func(i, j int) bool { return g.Rows[i].order < g.Rows[j].order })
 			findingGroups = append(findingGroups, *g)
 		}
 	}
@@ -1331,6 +1662,7 @@ func generateReport(in ReportInput) (string, error) {
 		ConfirmedCount       int
 		UnverifiedCount      int
 		MechanicalCount      int
+		ShownCount           int
 		RejectedCount        int
 		WithheldCount        int
 		VerifyCounts         []VerifyCount
@@ -1339,8 +1671,7 @@ func generateReport(in ReportInput) (string, error) {
 		Rejected             []RecordView
 		Unexamined           []RecordView
 		Disputed             []RecordView
-		Prompt               template.HTML
-		Files                []*DiffFile
+		Files                []FileView
 		Comments             map[string]map[int][]CommentView
 		Summaries            []SummaryView
 		GeneralComments      []CommentView
@@ -1361,32 +1692,29 @@ func generateReport(in ReportInput) (string, error) {
 		Stages               []StageRecord
 		StagesCost           string
 	}{
-		PRNumber:        in.PRNumber,
-		PRURL:           in.PRURL,
-		PageTitle:       pageTitle,
-		Heading:         heading,
-		Description:     description,
-		Verdict:         headline,
-		VerdictClass:    headlineClass,
-		Upshot:          upshot,
-		PostedLine:      postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
-		TopFindings:     top,
-		ConfirmedCount:  counts[groupConfirmed],
-		UnverifiedCount: counts[groupNeedsCheck],
-		MechanicalCount: counts[groupMechanical],
-		RejectedCount:   len(rejected),
-		WithheldCount:   withheld,
-		VerifyCounts:    verifyCounts(verifyMarks, verifyTally),
-		Suggestions:     refs.markdown(suggestions),
-		FixFirst:        actions,
-		Rejected:        rejected,
-		Unexamined:      recordViews(records, stateUnverified, refs),
-		Disputed:        disputed,
-		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
-		// jQuery). It is NOT Markdown: escape it so it renders as literal text
-		// instead of being interpreted as HTML/math. CSS handles line wrapping.
-		Prompt:               template.HTML(html.EscapeString(in.Prompt)),
-		Files:                diffFiles,
+		PRNumber:             in.PRNumber,
+		PRURL:                in.PRURL,
+		PageTitle:            pageTitle,
+		Heading:              heading,
+		Description:          description,
+		Verdict:              headline,
+		VerdictClass:         headlineClass,
+		Upshot:               upshot,
+		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
+		TopFindings:          top,
+		ConfirmedCount:       counts[groupConfirmed],
+		UnverifiedCount:      counts[groupNeedsCheck],
+		MechanicalCount:      counts[groupMechanical],
+		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical],
+		RejectedCount:        len(rejected),
+		WithheldCount:        withheld,
+		VerifyCounts:         verifyCounts(verifyMarks, verifyTally),
+		Suggestions:          refs.markdown(suggestions),
+		FixFirst:             actions,
+		Rejected:             rejected,
+		Unexamined:           recordViews(records, stateUnverified, refs),
+		Disputed:             disputed,
+		Files:                planFiles(diffFiles, commentsByFile, diffBudgetBytes),
 		Comments:             commentsByFile,
 		Summaries:            summaries,
 		GeneralComments:      generalComments,
@@ -1409,9 +1737,8 @@ func generateReport(in ReportInput) (string, error) {
 	}
 
 	funcMap := template.FuncMap{
-		"markdownify": func(s string) template.HTML {
-			return renderMarkdown(s)
-		},
+		"markdownify":    renderMarkdown,
+		"markdownInline": renderMarkdownInline,
 		"dict": func(values ...interface{}) (map[string]interface{}, error) {
 			if len(values)%2 != 0 {
 				return nil, fmt.Errorf("dict expects an even number of arguments: got %d", len(values))

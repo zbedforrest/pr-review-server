@@ -780,7 +780,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	if !execution.Job.Config.Effective.FirstPass.Enabled {
 		modelName = applyAgentUsage(result, agentOut)
 	}
-	result.ReportStages = reportStages(execution.Ensemble, agentOut, modelName)
+	result.ReportStages = reportStages(execution.Ensemble, agentOut, modelName, p.stageModels())
 	view := p.reportPublishViewFor(execution.Job, result)
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName, view)
 	if htmlContent == nil {

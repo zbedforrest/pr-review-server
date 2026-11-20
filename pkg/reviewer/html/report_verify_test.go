@@ -69,7 +69,7 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	markup := report[:strings.Index(report, `<div id="chat-sidebar"`)]
+	markup := report[:strings.Index(report, "<script>")]
 
 	assert.Equal(t, 3, strings.Count(markup, ">REFUTED</span>"), "index row, detailed comment and its reason note")
 	assert.Equal(t, 2, strings.Count(markup, ">VERIFIED</span>"))
@@ -155,13 +155,27 @@ func TestGenerateReport_LeadsWithTheRewriteGitHubShows(t *testing.T) {
 func TestGenerateReport_EmbedsNoChatClientOrDuplicateDiff(t *testing.T) {
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n package a\n+var distinctiveDiffLine = 1\n", PRNumber: 7, PRTitle: "t",
-		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0), Prompt: "the prompt",
+		CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 	})
 	require.NoError(t, err)
 	assert.NotContains(t, report, "generativelanguage.googleapis.com")
 	assert.NotContains(t, report, "API_KEY")
 	assert.Equal(t, 1, strings.Count(report, "distinctiveDiffLine"))
-	assert.Contains(t, report, "the prompt")
+	assert.NotContains(t, report, "chat-sidebar")
+	assert.NotContains(t, report, "prompt-handle")
+	assert.NotContains(t, report, "prompt-body")
+	assert.NotContains(t, report, "Prompt handle")
+}
+
+func TestGenerateReport_HighlightsOnlyWhenTheLibraryLoadedAndAfterNavigationIsWired(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	require.NoError(t, err)
+	guard := strings.Index(report, "if (window.hljs) {")
+	require.Positive(t, guard)
+	assert.Equal(t, 1, strings.Count(report, "hljs.highlightElement"))
+	assert.Greater(t, strings.Index(report, "window.hljs.highlightElement"), guard)
+	assert.Greater(t, guard, strings.Index(report, "document.addEventListener('keydown'"))
+	assert.Greater(t, guard, strings.Index(report, "comment.id = `comment-${number}`"))
 }
 
 func TestGenerateReport_ShowsTheCostOfEachStage(t *testing.T) {
@@ -194,6 +208,6 @@ func TestGenerateReport_GroupsTheIndexByHowFindingsPost(t *testing.T) {
 	inline, notes, unverified := strings.Index(index, "<h3>Inline comments on the PR</h3>"), strings.Index(index, "<h3>Summary notes</h3>"), strings.Index(index, "<h3>Needs verification</h3>")
 	require.True(t, inline >= 0 && notes > inline && unverified > notes, "inline, then notes, then unverified")
 	critical, medium, low := strings.Index(index, "A critical inline."), strings.Index(index, "A medium inline."), strings.Index(index, "A low note.")
-	assert.True(t, inline < critical && critical < medium && medium < notes && notes < low, "severity order inside each group")
+	assert.True(t, inline < medium && medium < critical && critical < notes && notes < low, "page order inside each group")
 	assert.NotContains(t, index, "<h3>Confirmed</h3>")
 }
