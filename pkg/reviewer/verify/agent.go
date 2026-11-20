@@ -214,7 +214,7 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 	}
 	v.ValueReason = cut(d.ValueReason, maxReasonRunes)
 	if d.DuplicateOf != "" {
-		v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
+		v.ValueReason = cut("Repeats another finding: "+v.ValueReason, maxReasonRunes)
 	}
 	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW") && strings.EqualFold(strings.TrimSpace(c.Importance), "LOW")
 	standing := v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable

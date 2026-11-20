@@ -275,3 +275,17 @@ func TestVerifyPrompt_ToleratesANilPacket(t *testing.T) {
 		t.Fatalf("prompt:\n%s", p)
 	}
 }
+
+func TestCutNeverEndsInsideAWord(t *testing.T) {
+	reason := "One detail is overstated: this needs a narrow race between the first check and the final write, which ordinary staff whitelisting does not produce."
+	got := cut(reason, 90)
+	if len([]rune(got)) > 90 {
+		t.Fatalf("cut kept %d runes", len([]rune(got)))
+	}
+	if strings.Contains(got, "fi…") || strings.Contains(got, "fin…") {
+		t.Fatalf("cut inside a word: %q", got)
+	}
+	if cut("  short  ", 90) != "short" {
+		t.Fatal("a short reason changed")
+	}
+}

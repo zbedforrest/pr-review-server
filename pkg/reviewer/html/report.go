@@ -219,12 +219,19 @@ func verifyMarkFor(v *types.Verification) VerifyMark {
 		return m
 	}
 	if v.Applied && strings.TrimSpace(v.Reason) != "" {
-		m.VerifyReasons = append(m.VerifyReasons, "Verifier: "+strings.TrimSpace(v.Reason))
+		label := "Verifier: "
+		if v.Status == types.VerifyRevise {
+			// The reason argues with the wording the verifier replaced.
+			label = "Verifier, on the original wording: "
+		}
+		m.VerifyReasons = append(m.VerifyReasons, label+strings.TrimSpace(v.Reason))
 	}
 	if v.Applied && v.LowValue && strings.TrimSpace(v.ValueReason) != "" {
 		m.VerifyReasons = append(m.VerifyReasons, "Not worth posting: "+strings.TrimSpace(v.ValueReason))
 	}
-	if v.GateApplied && strings.TrimSpace(v.GateReason) != "" {
+	// A GOOD or OK grade changes nothing on the page, and its free text often
+	// argues the pill ("medium is inflated"); only a BAD grade explains itself.
+	if v.GateApplied && v.Gate == "BAD" && strings.TrimSpace(v.GateReason) != "" {
 		m.VerifyReasons = append(m.VerifyReasons, fmt.Sprintf("Quality gate (%s): %s", v.Gate, strings.TrimSpace(v.GateReason)))
 	}
 	status := v.Status
@@ -1435,6 +1442,7 @@ func generateReport(in ReportInput) (string, error) {
 	verdict, upshot, suggestions := "", "", ""
 	var structured *types.SummaryBlock
 	counts := map[string]int{}
+	unsettled := 0
 	groups := map[string]*FindingGroup{}
 	for _, name := range indexGroupOrder {
 		groups[name] = &FindingGroup{Name: name, Hint: groupHints[name]}
@@ -1529,6 +1537,9 @@ func generateReport(in ReportInput) (string, error) {
 
 		group, pill, class := findingGroupFor(comment)
 		counts[group]++
+		if group == groupConfirmed && showVerification && verifyMarkFor(comment.Verification).VerifyPill == verifyUnavailable {
+			unsettled++
+		}
 		indexGroup := group
 		if group == groupConfirmed && splitByInline {
 			indexGroup = groupNotes
@@ -1702,7 +1713,7 @@ func generateReport(in ReportInput) (string, error) {
 		Upshot:               upshot,
 		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
 		TopFindings:          top,
-		ConfirmedCount:       counts[groupConfirmed],
+		ConfirmedCount:       counts[groupConfirmed] - unsettled,
 		UnverifiedCount:      counts[groupNeedsCheck],
 		MechanicalCount:      counts[groupMechanical],
 		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical],
