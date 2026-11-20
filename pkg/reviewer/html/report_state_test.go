@@ -395,3 +395,18 @@ func TestGenerateReport_FixFirstListsAFindingOnceWhateverItIsCalled(t *testing.T
 	card := report[strings.Index(report, `class="fix-first"`):strings.Index(report, "<h2>Findings</h2>")]
 	assert.Equal(t, 1, strings.Count(card, "<li"), "label and location aliases of one finding render once")
 }
+
+func TestTopFindingsListsOnlyWhatStandsAboveTheRest(t *testing.T) {
+	item := func(sev string, order int) FixFirstItem { return FixFirstItem{Severity: sev, order: order} }
+	orders := func(items []FixFirstItem) []int {
+		var out []int
+		for _, i := range items {
+			out = append(out, i.order)
+		}
+		return out
+	}
+	assert.Empty(t, topFindings([]FixFirstItem{item("LOW", 1), item("LOW", 2), item("LOW", 3), item("LOW", 4)}), "equal severities have no top")
+	assert.Equal(t, []int{2}, orders(topFindings([]FixFirstItem{item("LOW", 1), item("MEDIUM", 2), item("LOW", 3)})))
+	assert.Equal(t, []int{4, 1, 3}, orders(topFindings([]FixFirstItem{item("MEDIUM", 3), item("MEDIUM", 1), item("LOW", 2), item("CRITICAL", 4), item("MEDIUM", 5)})))
+	assert.Empty(t, topFindings(nil))
+}
