@@ -19,14 +19,20 @@ import (
 )
 
 // Prefs selects requests by model prefix and the providers to prefer or skip.
+// Only restricts matching requests to the listed providers or endpoint tags
+// ("fireworks", "fireworks/spot") with no fallback to any other, so a request
+// fails when none of them can serve it.
 type Prefs struct {
 	Match  string
 	Order  []string
 	Ignore []string
+	Only   []string
 }
 
 // Enabled reports whether the preferences would change any request.
-func (p Prefs) Enabled() bool { return p.Match != "" && (len(p.Order) > 0 || len(p.Ignore) > 0) }
+func (p Prefs) Enabled() bool {
+	return p.Match != "" && (len(p.Order) > 0 || len(p.Ignore) > 0 || len(p.Only) > 0)
+}
 
 // Start serves the proxy on a loopback port and returns the base URL to use in
 // place of upstream (an OpenRouter API root such as https://openrouter.ai/api/v1)
@@ -102,7 +108,10 @@ func withProvider(body []byte, prefs Prefs) []byte {
 	if raw, set := m["provider"]; set && string(raw) != "null" {
 		return body
 	}
-	provider := map[string]any{"allow_fallbacks": true}
+	provider := map[string]any{"allow_fallbacks": len(prefs.Only) == 0}
+	if len(prefs.Only) > 0 {
+		provider["only"] = prefs.Only
+	}
 	if len(prefs.Order) > 0 {
 		provider["order"] = prefs.Order
 	}

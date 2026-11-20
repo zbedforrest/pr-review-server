@@ -202,10 +202,13 @@ type Config struct {
 	// applied by a loopback proxy at startup (fallbacks stay allowed).
 	OpenRouterProviderOrder  []string
 	OpenRouterProviderIgnore []string
-	OpenRouterProviderMatch  string
-	BugMemoryPath            string // local path to a bug-memory library JSON (dev/benchmark)
-	BugMemoryObject          string // GCS object name of the library (prod); Path wins if both set
-	RequiredChecks           bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+	// OpenRouterProviderOnly restricts those models to the listed providers
+	// or endpoint tags with fallbacks off.
+	OpenRouterProviderOnly  []string
+	OpenRouterProviderMatch string
+	BugMemoryPath           string // local path to a bug-memory library JSON (dev/benchmark)
+	BugMemoryObject         string // GCS object name of the library (prod); Path wins if both set
+	RequiredChecks          bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
 	// AgentPriorFindings shows the review agent what PRism already raised on
 	// the PR, from the publication ledger, so a restatement names its prior
 	// (AGENT_PRIOR_FINDINGS=true; off by default, a prompt change).
@@ -522,6 +525,7 @@ func Load() *Config {
 		OpenRouterBaseURL:           os.Getenv("OPENROUTER_BASE_URL"),
 		OpenRouterProviderOrder:     getEnvListOrDefault("OPENROUTER_PROVIDER_ORDER", nil, strings.TrimSpace),
 		OpenRouterProviderIgnore:    getEnvListOrDefault("OPENROUTER_PROVIDER_IGNORE", nil, strings.TrimSpace),
+		OpenRouterProviderOnly:      getEnvListOrDefault("OPENROUTER_PROVIDER_ONLY", nil, strings.TrimSpace),
 		OpenRouterProviderMatch:     strings.TrimSpace(getEnvOrDefault("OPENROUTER_PROVIDER_MATCH", "deepseek/")),
 		BugMemoryPath:               os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:             os.Getenv("BUG_MEMORY_OBJECT"),

@@ -261,7 +261,7 @@ func start(cfg *config.Config) {
 // proxy when preferences are configured; a proxy that cannot start is fatal so
 // a deployment never runs believing it is pinned when it is not.
 func startOpenRouterPin(cfg *config.Config) {
-	prefs := openrouterpin.Prefs{Match: cfg.OpenRouterProviderMatch, Order: cfg.OpenRouterProviderOrder, Ignore: cfg.OpenRouterProviderIgnore}
+	prefs := openrouterpin.Prefs{Match: cfg.OpenRouterProviderMatch, Order: cfg.OpenRouterProviderOrder, Ignore: cfg.OpenRouterProviderIgnore, Only: cfg.OpenRouterProviderOnly}
 	if !prefs.Enabled() {
 		return
 	}
@@ -274,5 +274,5 @@ func startOpenRouterPin(cfg *config.Config) {
 		log.Fatalf("OpenRouter provider preferences: %v", err)
 	}
 	cfg.OpenRouterBaseURL = local
-	log.Printf("[CONFIG] OpenRouter provider preferences for %s*: order=%v ignore=%v (via %s)", prefs.Match, prefs.Order, prefs.Ignore, local)
+	log.Printf("[CONFIG] OpenRouter provider preferences for %s*: only=%v order=%v ignore=%v (via %s)", prefs.Match, prefs.Only, prefs.Order, prefs.Ignore, local)
 }
