@@ -63,6 +63,7 @@ type Line struct {
 	Content       template.HTML
 	OldLineNumber int
 	NewLineNumber int
+	Truncated     bool
 }
 
 // DiffFile represents the diff for a single file.
@@ -680,32 +681,146 @@ func ParseDiff(diff string) []*DiffFile {
 		switch {
 		case strings.HasPrefix(line, "\\"):
 		case strings.HasPrefix(line, "+"):
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "added",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, "+"))),
-				NewLineNumber: newLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("added", strings.TrimPrefix(line, "+"), 0, newLine))
 			newLine++
 		case strings.HasPrefix(line, "-"):
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "deleted",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, "-"))),
-				OldLineNumber: oldLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("deleted", strings.TrimPrefix(line, "-"), oldLine, 0))
 			oldLine++
 		default:
-			currentFile.Lines = append(currentFile.Lines, Line{
-				Type:          "context",
-				Content:       template.HTML(html.EscapeString(strings.TrimPrefix(line, " "))),
-				OldLineNumber: oldLine,
-				NewLineNumber: newLine,
-			})
+			currentFile.Lines = append(currentFile.Lines, diffLine("context", strings.TrimPrefix(line, " "), oldLine, newLine))
 			oldLine++
 			newLine++
 		}
 	}
 
 	return files
+}
+
+// Page weight limits: the longest diff line shown, and how much line content
+// uncommented files may add to one page.
+const (
+	maxLineBytes    = 2000
+	diffBudgetBytes = 400 * 1024
+)
+
+// diffLine builds a diff row, cutting an overlong line before it is escaped
+// so the cut never lands inside an HTML entity.
+func diffLine(kind, text string, oldLine, newLine int) Line {
+	text, truncated := truncateLine(text)
+	return Line{
+		Type:          kind,
+		Content:       template.HTML(html.EscapeString(text)),
+		OldLineNumber: oldLine,
+		NewLineNumber: newLine,
+		Truncated:     truncated,
+	}
+}
+
+// truncateLine cuts text to at most maxLineBytes without splitting a rune.
+func truncateLine(text string) (string, bool) {
+	if len(text) <= maxLineBytes {
+		return text, false
+	}
+	cut := maxLineBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut], true
+}
+
+const (
+	fileOpen      = "open"
+	fileCollapsed = "collapsed"
+	fileSkipped   = "skipped"
+)
+
+// FileView is a diff file with how the page shows it.
+type FileView struct {
+	*DiffFile
+	Mode      string
+	LineCount int
+}
+
+func (f FileView) Collapsed() bool { return f.Mode == fileCollapsed }
+
+func (f FileView) Skipped() bool { return f.Mode == fileSkipped }
+
+// LineLabel is the file's size in diff lines, gap rows excluded.
+func (f FileView) LineLabel() string {
+	if f.LineCount == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", f.LineCount)
+}
+
+var lockfileNames = map[string]bool{
+	"package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true, "go.sum": true, "Cargo.lock": true,
+	"poetry.lock": true, "Pipfile.lock": true, "composer.lock": true, "Gemfile.lock": true,
+}
+
+var generatedDirs = map[string]bool{"vendor": true, "node_modules": true, "dist": true, "build": true}
+
+var generatedSuffixes = []string{".min.js", ".min.css", ".map", ".ipynb", ".pb.go", "_pb2.py", ".snap", ".svg"}
+
+// isGeneratedPath reports whether a path names a lockfile, a vendored or
+// built tree, or another file nobody reviews line by line.
+func isGeneratedPath(path string) bool {
+	segments := strings.Split(path, "/")
+	name := segments[len(segments)-1]
+	if lockfileNames[name] {
+		return true
+	}
+	for _, dir := range segments[:len(segments)-1] {
+		if generatedDirs[dir] {
+			return true
+		}
+	}
+	for _, suffix := range generatedSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// planFiles decides how each diff file is shown, in diff order. A file with
+// comments is always open and whole. Of the rest, generated files and those
+// that no longer fit the budget are listed without their diff, and the others
+// are collapsed. Commented files are charged to the budget first.
+func planFiles(files []*DiffFile, comments map[string]map[int][]CommentView, budget int) []FileView {
+	views := make([]FileView, len(files))
+	sizes := make([]int, len(files))
+	for i, f := range files {
+		views[i] = FileView{DiffFile: f, Mode: fileCollapsed}
+		for _, line := range f.Lines {
+			if line.Type == lineTypeGap {
+				continue
+			}
+			views[i].LineCount++
+			sizes[i] += len(line.Content)
+			if line.Truncated {
+				views[i].Mode = fileSkipped
+			}
+		}
+		switch {
+		case len(comments[f.Path]) > 0:
+			views[i].Mode = fileOpen
+			budget -= sizes[i]
+		case isGeneratedPath(f.Path):
+			views[i].Mode = fileSkipped
+		}
+	}
+	for i := range views {
+		if views[i].Mode != fileCollapsed {
+			continue
+		}
+		if sizes[i] > budget {
+			views[i].Mode = fileSkipped
+			continue
+		}
+		budget -= sizes[i]
+	}
+	return views
 }
 
 // parseHunkHeader returns the first old and new line a hunk's rows carry.
@@ -1186,7 +1301,7 @@ func generateReport(in ReportInput) (string, error) {
 		Unexamined           []RecordView
 		Merged               []RecordView
 		Prompt               template.HTML
-		Files                []*DiffFile
+		Files                []FileView
 		Comments             map[string]map[int][]CommentView
 		Summaries            []SummaryView
 		GeneralComments      []CommentView
@@ -1231,7 +1346,7 @@ func generateReport(in ReportInput) (string, error) {
 		// jQuery). It is NOT Markdown: escape it so it renders as literal text
 		// instead of being interpreted as HTML/math. CSS handles line wrapping.
 		Prompt:               template.HTML(html.EscapeString(in.Prompt)),
-		Files:                diffFiles,
+		Files:                planFiles(diffFiles, commentsByFile, diffBudgetBytes),
 		Comments:             commentsByFile,
 		Summaries:            summaries,
 		GeneralComments:      generalComments,

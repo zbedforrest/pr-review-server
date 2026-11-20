@@ -2,6 +2,7 @@ package html
 
 import (
 	"fmt"
+	"html/template"
 	"strings"
 	"testing"
 	"time"
@@ -1296,4 +1297,165 @@ func TestGenerateReport_ProfileLineInHeader(t *testing.T) {
 	in.Profile = ""
 	report = renderLayoutFixture(t, in)
 	assert.NotContains(t, report, "Profile:")
+}
+
+func addedFileDiff(path string, lines ...string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
+	for _, line := range lines {
+		b.WriteString("+" + line + "\n")
+	}
+	return b.String()
+}
+
+func fileModes(views []FileView) map[string]string {
+	modes := map[string]string{}
+	for _, v := range views {
+		modes[v.Path] = v.Mode
+	}
+	return modes
+}
+
+func TestGenerateReport_CommentedFileIsOpenAndComplete(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		PRURL:    "https://example.test/acme/widgets/pull/7",
+		Comments: []types.LineComment{{FilePath: "widgets/gear.go", LineNumber: 2, CommentBody: "Teeth can be negative."}},
+		Diff:     addedFileDiff("widgets/gear.go", "package widgets", "var teeth = -1", "var spokes = 4"),
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<div class="file-header">widgets/gear.go</div>`)
+	assert.NotContains(t, report, "<details class=\"diff-file\">")
+	assert.NotContains(t, report, "not rendered")
+	for _, line := range []string{"package widgets", "var teeth = -1", "var spokes = 4"} {
+		assert.Contains(t, report, `<div class="line-content">`+line+`</div>`)
+	}
+	assert.Less(t, strings.Index(report, "var teeth = -1"), strings.LastIndex(report, "Teeth can be negative."))
+	assert.Equal(t, 1, strings.Count(report, `<div class="comment-row">`))
+}
+
+func TestGenerateReport_UncommentedFileIsCollapsedWithItsLineCount(t *testing.T) {
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: `diff --git a/widgets/axle.go b/widgets/axle.go
+--- a/widgets/axle.go
++++ b/widgets/axle.go
+@@ -40,2 +40,2 @@
+ keep
+-old
++new
+`,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<summary class="file-header">widgets/axle.go (3 lines)</summary>`)
+	assert.NotContains(t, report, "<details class=\"diff-file\" open")
+	assert.NotContains(t, report, `<div class="file-header">widgets/axle.go</div>`)
+	assert.Contains(t, report, `<div class="line-content">new</div>`)
+}
+
+func TestGenerateReport_GeneratedFileIsNotRenderedUnlessCommented(t *testing.T) {
+	in := ReportInput{
+		PRURL: "https://example.test/acme/widgets/pull/7",
+		Diff:  addedFileDiff("yarn.lock", "lockedDependency", "anotherDependency") + addedFileDiff("vendor/acme/gear.go", "vendoredGear") + addedFileDiff("web/app.min.js", "minifiedBundle"),
+	}
+	report, err := GenerateReportFrom(in)
+	assert.NoError(t, err)
+	assert.Contains(t, report, `yarn.lock: not rendered (2 lines) <a href="https://example.test/acme/widgets/pull/7/files">view on GitHub</a>`)
+	assert.Contains(t, report, "vendor/acme/gear.go: not rendered (1 line) <a")
+	assert.Contains(t, report, "web/app.min.js: not rendered (1 line) <a")
+	for _, hidden := range []string{"lockedDependency", "vendoredGear", "minifiedBundle"} {
+		assert.NotContains(t, report, hidden)
+	}
+
+	in.PRURL = ""
+	report, err = GenerateReportFrom(in)
+	assert.NoError(t, err)
+	assert.Contains(t, report, "yarn.lock: not rendered (2 lines)</div>")
+	assert.NotContains(t, report, "view on GitHub")
+
+	in.Comments = []types.LineComment{{FilePath: "yarn.lock", LineNumber: 1, CommentBody: "This pin is yanked."}}
+	report, err = GenerateReportFrom(in)
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<div class="file-header">yarn.lock</div>`)
+	assert.Contains(t, report, `<div class="line-content">lockedDependency</div>`)
+	assert.Contains(t, report, "This pin is yanked.")
+	assert.NotContains(t, report, "vendoredGear")
+}
+
+func TestIsGeneratedPath(t *testing.T) {
+	cases := map[string]bool{
+		"package-lock.json":            true,
+		"services/api/go.sum":          true,
+		"third_party/vendor/lib/a.go":  true,
+		"node_modules/left/index.js":   true,
+		"web/dist/bundle.js":           true,
+		"build/out.txt":                true,
+		"static/site.min.css":          true,
+		"static/site.js.map":           true,
+		"notebooks/explore.ipynb":      true,
+		"api/widget.pb.go":             true,
+		"api/widget_pb2.py":            true,
+		"web/__snapshots__/gear.snap":  true,
+		"assets/logo.svg":              true,
+		"widgets/gear.go":              false,
+		"widgets/build":                false,
+		"vendors/gear.go":              false,
+		"docs/distribution/go.summary": false,
+	}
+	for path, want := range cases {
+		assert.Equal(t, want, isGeneratedPath(path), path)
+	}
+}
+
+func TestParseDiff_LongLineIsTruncatedOnARuneBoundary(t *testing.T) {
+	long := strings.Repeat("a", maxLineBytes-1) + "é" + "tail"
+	files := ParseDiff(addedFileDiff("widgets/gear.go", long, "<&>"))
+	assert.Len(t, files, 1)
+	assert.Equal(t, []Line{
+		{Type: "added", Content: template.HTML(strings.Repeat("a", maxLineBytes-1)), NewLineNumber: 1, Truncated: true},
+		{Type: "added", Content: "&lt;&amp;&gt;", NewLineNumber: 2},
+	}, files[0].Lines)
+
+	entities := ParseDiff(addedFileDiff("widgets/gear.go", strings.Repeat("<", maxLineBytes+1)))
+	assert.Equal(t, template.HTML(strings.Repeat("&lt;", maxLineBytes)), entities[0].Lines[0].Content)
+}
+
+func TestGenerateReport_TruncatedLineShowsAMarker(t *testing.T) {
+	long := strings.Repeat("a", maxLineBytes) + "droppedTail"
+	in := ReportInput{
+		Comments: []types.LineComment{{FilePath: "widgets/gear.go", LineNumber: 1, CommentBody: "This literal is huge."}},
+		Diff:     addedFileDiff("widgets/gear.go", long) + addedFileDiff("widgets/axle.go", long, "shortLine"),
+	}
+	report, err := GenerateReportFrom(in)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(report, `<span class="line-truncated">line truncated</span>`))
+	assert.NotContains(t, report, "droppedTail")
+	assert.Contains(t, report, "This literal is huge.")
+	assert.Contains(t, report, "widgets/axle.go: not rendered (2 lines)")
+	assert.NotContains(t, report, "shortLine")
+}
+
+func TestPlanFiles_BudgetKeepsCommentedFilesAndDropsLaterUncommentedOnes(t *testing.T) {
+	file := func(path string, size int) *DiffFile {
+		return &DiffFile{Path: path, Lines: []Line{
+			{Type: lineTypeGap, Content: template.HTML(strings.Repeat("g", 1000))},
+			{Type: "added", Content: template.HTML(strings.Repeat("x", size)), NewLineNumber: 1},
+		}}
+	}
+	files := []*DiffFile{file("a.go", 40), file("b.go", 40), file("c.go", 500), file("d.go", 20), file("e.go", 30)}
+	comments := map[string]map[int][]CommentView{"c.go": {1: {{}}}, "e.go": {0: {{}}}}
+
+	views := planFiles(files, comments, 600)
+
+	var order []string
+	for _, v := range views {
+		order = append(order, v.Path)
+		assert.Equal(t, 1, v.LineCount, v.Path)
+	}
+	assert.Equal(t, []string{"a.go", "b.go", "c.go", "d.go", "e.go"}, order)
+	assert.Equal(t, map[string]string{
+		"a.go": fileCollapsed, "b.go": fileSkipped, "c.go": fileOpen, "d.go": fileCollapsed, "e.go": fileOpen,
+	}, fileModes(views))
+
+	assert.Equal(t, map[string]string{
+		"a.go": fileSkipped, "b.go": fileSkipped, "c.go": fileOpen, "d.go": fileSkipped, "e.go": fileOpen,
+	}, fileModes(planFiles(files, comments, 100)))
 }

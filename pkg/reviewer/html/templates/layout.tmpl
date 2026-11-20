@@ -13,6 +13,11 @@
         h1 a:hover { color: #80bfff; text-decoration: underline; }
         .diff-file { border: 1px solid #30363d; border-radius: 6px; margin-bottom: 20px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; }
         .file-header { background-color: #161b22; padding: 10px; border-bottom: 1px solid #30363d; font-weight: 600; }
+        summary.file-header { cursor: pointer; }
+        details.diff-file:not([open]) > summary.file-header, .file-skipped { border-bottom: none; border-radius: 6px; }
+        .file-skipped { color: #8b949e; font-weight: 400; }
+        .file-skipped a { color: #58a6ff; margin-left: 8px; }
+        .line-truncated { margin-left: 8px; padding: 0 6px; border: 1px solid #30363d; border-radius: 10px; color: #8b949e; font-style: italic; white-space: nowrap; }
         /* display:table is load-bearing, not redundant with the table-row/table-cell
            children below. Without it this div is a block, its rows get wrapped in an
            anonymous table box, and that box — not this div — sizes the columns. An

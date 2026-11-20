@@ -1,7 +1,17 @@
 {{define "diff-file"}}
 {{$filePath := .File.Path}}
+{{if .File.Skipped}}
+<div class="diff-file">
+    <div class="file-header file-skipped">{{$filePath}}: not rendered ({{.File.LineLabel}}){{if $.Root.PRURL}} <a href="{{$.Root.PRURL}}/files">view on GitHub</a>{{end}}</div>
+</div>
+{{else}}
+{{if .File.Collapsed}}
+<details class="diff-file">
+    <summary class="file-header">{{$filePath}} ({{.File.LineLabel}})</summary>
+{{else}}
 <div class="diff-file">
     <div class="file-header">{{$filePath}}</div>
+{{end}}
     <div class="diff-table">
         {{/* Whole-file findings (LineNumber 0) render once, under the header.
              Keying them per-line would repeat them on every deleted line,
@@ -32,7 +42,7 @@
         <div class="line {{.Type}}">
             <div class="line-num">{{if eq .OldLineNumber 0}}-{{else}}{{.OldLineNumber}}{{end}}</div>
             <div class="line-num">{{if eq .NewLineNumber 0}}-{{else}}{{.NewLineNumber}}{{end}}</div>
-            <div class="line-content">{{.Content}}</div>
+            <div class="line-content">{{.Content}}{{if .Truncated}}<span class="line-truncated">line truncated</span>{{end}}</div>
         </div>
         {{$comments := ""}}
         {{if ne .NewLineNumber 0}}{{$comments = index (index $.Root.Comments $filePath) .NewLineNumber}}{{end}}
@@ -54,5 +64,6 @@
         {{end}}
         {{end}}
     </div>
-  </div>
+{{if .File.Collapsed}}</details>{{else}}</div>{{end}}
+{{end}}
 {{end}}
