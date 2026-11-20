@@ -106,12 +106,19 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to look up PR", http.StatusInternalServerError)
 		return
 	}
+	banner := ""
 	if pr == nil {
-		http.Error(w, "PR not found", http.StatusNotFound)
-		return
+		pr = s.closedPRFromRuns(owner, repo, prNumber, strings.TrimSpace(r.URL.Query().Get("run_id")))
+		if pr == nil {
+			http.Error(w, "PR not found", http.StatusNotFound)
+			return
+		}
+		owner, repo = pr.RepoOwner, pr.RepoName
+		banner = closedPRBanner
 	}
 
 	inFlight := isInFlightStatus(pr.Status)
+	wantHTML := r.URL.Query().Get("format") == "html"
 
 	// Resolve which review filename to serve, if any.
 	pinnedSHA := strings.TrimSpace(r.URL.Query().Get("sha"))
@@ -135,6 +142,18 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		filename = gcs.ReviewFileName(owner, repo, prNumber, pinnedSHA)
 	} else {
 		filename = pr.ReviewHTMLPath
+	}
+
+	// A new head clears review_path even when the diff did not change and no
+	// review follows, so a person opening the report sees the last run instead
+	// of a pending stub. API callers keep the pending status they poll on.
+	restored := ""
+	if filename == "" && wantHTML && runID == "" {
+		if fallback := immutableReviewPath(pr.ReviewRunJSON, owner, repo, prNumber); fallback != "" &&
+			(pinnedSHA == "" || shaPrefixMatch(pinnedSHA, commitSHAFromFilename(fallback))) {
+			filename, restored = fallback, fallback
+			banner = movedPRBanner(inFlight)
+		}
 	}
 
 	// No review file for this PR yet. Three sub-cases, distinguished by
@@ -166,7 +185,7 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	// Defense-in-depth path-traversal guard, mirroring handleReviewFromGCS.
 	cleaned := filepath.Clean(filename)
 	cleanedSlash := filepath.ToSlash(cleaned)
-	trustedRunPath := strings.HasPrefix(cleanedSlash, "runs/") && (runID != "" || (pinnedSHA == "" && filename == pr.ReviewHTMLPath))
+	trustedRunPath := strings.HasPrefix(cleanedSlash, "runs/") && (runID != "" || (pinnedSHA == "" && filename == pr.ReviewHTMLPath) || filename == restored)
 	if strings.Contains(cleanedSlash, "..") || filepath.IsAbs(cleaned) || (!trustedRunPath && strings.ContainsRune(cleanedSlash, '/')) {
 		http.Error(w, "Invalid review path", http.StatusBadRequest)
 		return
@@ -204,7 +223,10 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 
 	// ?format=html keeps the raw HTML escape hatch for humans / debugging.
 	// Everything else returns the structured payload.
-	if r.URL.Query().Get("format") == "html" {
+	if wantHTML {
+		if banner != "" {
+			html = withBanner(html, fmt.Sprintf(banner, shortSHA(commitSHAFromFilename(filename))))
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(html) // nolint:errcheck
 		return
@@ -354,6 +376,9 @@ func parseReviewPath(urlPath string) (string, string, int, error) {
 	owner, repo, prStr := parts[0], parts[1], parts[2]
 	if owner == "" || repo == "" {
 		return "", "", 0, fmt.Errorf("owner and repo are required")
+	}
+	if !isSafeRepoSegment(owner) || !isSafeRepoSegment(repo) {
+		return "", "", 0, fmt.Errorf("owner and repo may only contain letters, digits, '.', '-' and '_'")
 	}
 	prNumber, err := strconv.Atoi(prStr)
 	if err != nil || prNumber <= 0 {
