@@ -141,7 +141,7 @@ func TestRunPromptsUsePerRunFirstPassClientAndIdentity(t *testing.T) {
 	service := NewService(&MockGithubClient{}, defaultClient, nil)
 	result := service.runPrompts(context.Background(), PerformReviewConfig{
 		FirstPassClient: overrideClient,
-		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5-5"},
 		AttemptObserver: func(event ProviderAttemptEvent) error {
 			eventsMu.Lock()
 			events = append(events, event)
@@ -162,19 +162,19 @@ func TestRunPromptsUsePerRunFirstPassClientAndIdentity(t *testing.T) {
 	for _, event := range events {
 		assert.Equal(t, "anthropic", event.Provider)
 		assert.Equal(t, "anthropic_api", event.Backend)
-		assert.Equal(t, "claude-sonnet-5", event.RequestedModel)
+		assert.Equal(t, "claude-opus-5-5", event.RequestedModel)
 	}
 }
 
 func TestLaunchStaggerGatesOnClaudeFirstPass(t *testing.T) {
 	svc := NewService(&MockGithubClient{}, &MockLLMClient{}, nil)
-	claudeInfo := &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 8}
+	claudeInfo := &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5-5", CacheStaggerSec: 8}
 
 	assert.Equal(t, 8*time.Second, svc.launchStagger(PerformReviewConfig{FirstPass: claudeInfo}))
 	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{}),
 		"gemini service-wide identity keeps the historical stagger")
 	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
-		FirstPass: &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+		FirstPass: &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5-5"},
 	}), "zero stagger disables the cache delay")
 	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
 		FirstPass: &FirstPassInfo{Provider: "google", Backend: "gemini_api", Model: "gemini-3.1-pro-preview", CacheStaggerSec: 8},
@@ -183,7 +183,7 @@ func TestLaunchStaggerGatesOnClaudeFirstPass(t *testing.T) {
 		"the fast path swaps to the gemini flash client")
 
 	claudeSvc := NewServiceWithFirstPass(&MockGithubClient{}, &MockLLMClient{}, nil,
-		FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 5})
+		FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5-5", CacheStaggerSec: 5})
 	assert.Equal(t, 5*time.Second, claudeSvc.launchStagger(PerformReviewConfig{}),
 		"service-wide identity applies when no per-run override is set")
 }
@@ -201,7 +201,7 @@ func TestRunPromptsStaggersClaudeSampleStartsForPromptCache(t *testing.T) {
 	svc := NewService(&MockGithubClient{}, client, nil)
 	result := svc.runPrompts(context.Background(), PerformReviewConfig{
 		FirstPassClient: client,
-		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 1},
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5-5", CacheStaggerSec: 1},
 		AttemptObserver: func(event ProviderAttemptEvent) error {
 			if event.Status == "started" {
 				eventsMu.Lock()

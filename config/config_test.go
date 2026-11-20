@@ -382,11 +382,11 @@ func TestLoadFirstPassModelAllowlistDefaults(t *testing.T) {
 func TestLoadClaudeCodeFirstPassAllowlistAndDefault(t *testing.T) {
 	clearFirstPassAllowlistEnv(t)
 	t.Setenv("FIRST_PASS_PROVIDER", "claude-code")
-	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE", " claude-sonnet-5 , claude-sonnet-5 ")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE", " claude-opus-5-5 , claude-opus-5-5 ")
 
 	cfg := Load()
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode,
-		[]string{"claude-sonnet-5", defaultFirstPassClaudeCodeModel})
+		[]string{"claude-opus-5-5", defaultFirstPassClaudeCodeModel})
 	if got := cfg.FirstPassProviderAPIKey("claude-code"); got != "" {
 		t.Fatalf("claude-code first pass returned API key %q", got)
 	}
@@ -404,11 +404,11 @@ func TestLoadFirstPassModelAllowlistsParseAndAppendActiveModel(t *testing.T) {
 	clearFirstPassAllowlistEnv(t)
 	t.Setenv("FIRST_PASS_PROVIDER", "claude")
 	t.Setenv("FIRST_PASS_MODEL", "claude-fable-5")
-	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE", " claude-opus-5 , claude-opus-5, claude-sonnet-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE", " claude-opus-5 , claude-opus-5, claude-opus-5-5")
 	t.Setenv("REVIEW_FIRST_PASS_MODELS_GEMINI", "gemini-2.5-pro")
 
 	cfg := Load()
-	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{"claude-opus-5", "claude-opus-5-5", "claude-fable-5"})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-2.5-pro"})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode, []string{defaultFirstPassClaudeCodeModel})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
@@ -417,11 +417,11 @@ func TestLoadFirstPassModelAllowlistsParseAndAppendActiveModel(t *testing.T) {
 func TestLoadFirstPassAllowlistAppendsProviderDefaultWhenModelUnset(t *testing.T) {
 	clearFirstPassAllowlistEnv(t)
 	t.Setenv("FIRST_PASS_PROVIDER", "openrouter")
-	t.Setenv("REVIEW_FIRST_PASS_MODELS_OPENROUTER", "anthropic/claude-sonnet-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_OPENROUTER", "anthropic/claude-opus-5.5")
 
 	cfg := Load()
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter,
-		[]string{"anthropic/claude-sonnet-5", defaultFirstPassOpenRouterModel})
+		[]string{"anthropic/claude-opus-5.5", defaultFirstPassOpenRouterModel})
 }
 
 func assertStringsEqual(t *testing.T, got, want []string) {

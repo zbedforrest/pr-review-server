@@ -81,7 +81,7 @@ func TestOtherModelsAndExplicitProvidersPassUnchanged(t *testing.T) {
 	up, s := echoUpstream(t)
 	h := Handler(up, Prefs{Match: "deepseek/", Order: []string{"digitalocean"}})
 
-	post(t, h, "/chat/completions", `{"model":"anthropic/claude-haiku-4.5","messages":[]}`)
+	post(t, h, "/chat/completions", `{"model":"anthropic/claude-opus-5.5","messages":[]}`)
 	post(t, h, "/chat/completions", `{"model":"deepseek/deepseek-v4.1-flash","provider":{"only":["together"]}}`)
 
 	other, _ := s.at(0)

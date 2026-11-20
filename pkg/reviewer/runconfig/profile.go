@@ -55,7 +55,7 @@ const (
 	// the agent every run uses and the model that writes the merged review.
 	// Deployments admit them regardless of their own allowlists.
 	EnsembleModel         = "deepseek/deepseek-v4.1-flash"
-	EnsembleMergeModel    = "anthropic/claude-haiku-4.5"
+	EnsembleMergeModel    = "anthropic/claude-opus-5.5"
 	ensembleBackend       = "openrouter"
 	ensembleEffort        = "high"
 	ensembleWallClockSecs = 360
