@@ -15,9 +15,9 @@
 
 {{define "verify-pill"}}{{if .VerifyPill}}<span class="status-pill verify-pill verify-{{.VerifyClass}} has-note" tabindex="0" data-note="{{.VerifyNote}}">{{.VerifyPill}}</span>{{end}}{{end}}
 
-{{define "finding-detail-line"}}{{if .}}<p>{{.}}</p>{{end}}{{end}}
+{{define "finding-detail-line"}}{{if .}}<p>{{. | markdownInline}}</p>{{end}}{{end}}
 
-{{define "finding-verify"}}{{if .Detail.VerifyCondition}}<p><strong>How to verify:</strong> {{.Detail.VerifyCondition}}. Expected: {{.Detail.VerifyExpected}}.</p>{{end}}{{end}}
+{{define "finding-verify"}}{{if .Detail.VerifyCondition}}<p><strong>How to verify:</strong> {{.Detail.VerifyCondition | markdownInline}}. Expected: {{.Detail.VerifyExpected | markdownInline}}.</p>{{end}}{{end}}
 
 {{define "finding-body"}}{{if .DisplayBody}}
 <div class="finding-display"><div class="finding-display-title">{{.DisplayTitle | markdownInline}}</div>{{.DisplayBody | markdownify}}</div>
@@ -29,7 +29,7 @@
 {{template "finding-detail-line" .Detail.Impact}}{{template "finding-detail-line" .Detail.Uncertainty}}{{template "finding-verify" .}}
 </details>
 {{end}}{{end}}{{if .AlsoCovers}}
-<div class="also-covers">Also covers:{{range $i, $t := .AlsoCovers}}{{if $i}};{{end}} {{$t}}{{end}}</div>
+<div class="also-covers">Also covers:{{range $i, $t := .AlsoCovers}}{{if $i}};{{end}} {{$t | markdownInline}}{{end}}</div>
 {{end}}{{end}}
 
 {{define "verification-note"}}{{if .VerifyReasons}}
@@ -61,7 +61,7 @@
                 <li class="next-action">
                     <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
                     {{template "verify-pill" .}}
-                    <a class="fix-first-title-link" href="#{{.AnchorID}}">{{.Title}}</a>
+                    <a class="fix-first-title-link" href="#{{.AnchorID}}">{{.Title | markdownInline}}</a>
                     <span class="finding-location">{{.Location}}</span>
                 </li>
                 {{end}}
@@ -148,7 +148,7 @@
                 {{template "status-pill" .}}
                 {{template "verify-pill" .}}
                 <a class="finding-location" href="#{{.AnchorID}}">{{.FilePath}}{{if .LineNumber}}:{{.LineNumber}}{{end}}</a>
-                <span class="finding-title">{{.Title}}</span>
+                <span class="finding-title">{{.Title | markdownInline}}</span>
             </li>
             {{end}}
         </ul>

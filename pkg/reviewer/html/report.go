@@ -70,7 +70,15 @@ type Line struct {
 type DiffFile struct {
 	Path  string
 	Lines []Line
+	// Note says why a file has no lines to show.
+	Note string
 }
+
+const (
+	noteBinary    = "Binary file not shown"
+	noteEmpty     = "Empty file"
+	noteNoContent = "No content changes"
+)
 
 // CommentView is a wrapper for a comment with additional view-related data.
 // CommentBody has the legacy provenance preface stripped.
@@ -364,6 +372,7 @@ type FixFirstItem struct {
 	FilePath   string
 	LineNumber int
 	Title      string
+	order      int
 	VerifyMark
 }
 
@@ -691,6 +700,12 @@ func ParseDiff(diff string) []*DiffFile {
 				} else if oldPath != "" {
 					currentFile.Path = oldPath
 				}
+			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
+				currentFile.Note = noteBinary
+			case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "deleted file mode "):
+				if currentFile.Note == "" {
+					currentFile.Note = noteEmpty
+				}
 			case strings.HasPrefix(line, "rename to "):
 				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "rename to "))
 			case strings.HasPrefix(line, "copy to "):
@@ -713,6 +728,14 @@ func ParseDiff(diff string) []*DiffFile {
 			newLine++
 		}
 	}
+	for _, f := range files {
+		switch {
+		case len(f.Lines) > 0:
+			f.Note = ""
+		case f.Note == "":
+			f.Note = noteNoContent
+		}
+	}
 
 	return files
 }
@@ -722,6 +745,9 @@ func ParseDiff(diff string) []*DiffFile {
 const (
 	maxLineBytes    = 2000
 	diffBudgetBytes = 400 * 1024
+	// lineMarkupBytes is roughly what the row markup around one diff line
+	// weighs; short lines are mostly markup.
+	lineMarkupBytes = 250
 )
 
 // diffLine builds a diff row, cutting an overlong line before it is escaped
@@ -818,12 +844,14 @@ func planFiles(files []*DiffFile, comments map[string]map[int][]CommentView, bud
 				continue
 			}
 			views[i].LineCount++
-			sizes[i] += len(line.Content)
+			sizes[i] += len(line.Content) + lineMarkupBytes
 			if line.Truncated {
 				views[i].Mode = fileSkipped
 			}
 		}
 		switch {
+		case f.Note != "":
+			views[i].Mode = fileOpen
 		case len(comments[f.Path]) > 0:
 			views[i].Mode = fileOpen
 			budget -= sizes[i]
@@ -1052,15 +1080,27 @@ func postedLine(v PublishView, inline, notes int, shortSHA string) string {
 
 const topFindingsShown = 3
 
-// topFindings is the short list under the posted line: the most severe
-// posted findings, dropped when it would repeat the whole index.
+// topFindings is the short list under the posted line: the posted findings
+// above the lowest severity present, most severe first and in page order
+// within a severity. Findings that all share one severity have no top.
 func topFindings(posted []FixFirstItem) []FixFirstItem {
-	if len(posted) <= topFindingsShown {
-		return nil
+	lowest := 0
+	for _, f := range posted {
+		lowest = max(lowest, severityRank(f.Severity))
 	}
-	top := append([]FixFirstItem(nil), posted...)
-	sort.SliceStable(top, func(i, j int) bool { return severityRank(top[i].Severity) < severityRank(top[j].Severity) })
-	return top[:topFindingsShown]
+	var top []FixFirstItem
+	for _, f := range posted {
+		if severityRank(f.Severity) < lowest {
+			top = append(top, f)
+		}
+	}
+	sort.SliceStable(top, func(i, j int) bool {
+		if a, b := severityRank(top[i].Severity), severityRank(top[j].Severity); a != b {
+			return a < b
+		}
+		return top[i].order < top[j].order
+	})
+	return top[:min(len(top), topFindingsShown)]
 }
 
 // idRefs rewrites the reviewer's internal finding labels, which mean nothing
@@ -1380,7 +1420,7 @@ func numberCards(places []cardPlace) (counters []int, total int) {
 }
 
 func fixFirstItem(v CommentView, title string) FixFirstItem {
-	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, VerifyMark: v.VerifyMark}
+	return FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: title, order: v.Counter, VerifyMark: v.VerifyMark}
 }
 
 func generateReport(in ReportInput) (string, error) {

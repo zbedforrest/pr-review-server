@@ -53,6 +53,7 @@
         .added .line-content::before { content: "+"; padding-right: 10px; color: #2ea043; }
         .deleted .line-content { background-color: rgba(248, 81, 73, 0.15); }
         .deleted .line-content::before { content: "-"; padding-right: 10px; color: #f85149; }
+        .file-note { margin-left: 8px; color: var(--muted); font-weight: 400; font-style: italic; }
         .hunk-gap { display: table-row; }
         .hunk-gap-text { display: table-cell; padding: 2px 10px; color: var(--muted); background-color: var(--panel); font-style: italic; }
         .comment-row { display: table-row; }
@@ -177,7 +178,7 @@
         .finding-row:last-child { border-bottom: none; }
         .finding-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: var(--link); text-decoration: none; }
         .finding-location:hover { text-decoration: underline; }
-        .finding-title { color: var(--text); }
+        .finding-title { color: var(--text); flex: 1 1 320px; min-width: 0; }
         .comment-counter:target { outline: 2px solid #d29922; outline-offset: 4px; border-radius: 4px; }
         .review-details { background-color: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 20px; margin: 20px 0; color: var(--text); }
         .review-details > summary { cursor: pointer; font-weight: 600; color: var(--muted); }
@@ -210,7 +211,7 @@
         .target-line { 
             background-color: rgba(255, 212, 59, 0.15); /* Highlight the commented line in amber */
         }
-        .comment-body a, .general-body a, .summary-body a { color: var(--link); }
+        .comment-body a, .general-body a, .summary-body a, .pr-description a, .suggestions-body a { color: var(--link); }
         .has-note { position: relative; cursor: help; }
         .has-note:hover::after, .has-note:focus::after { content: attr(data-note); position: absolute; top: 100%; left: 0; margin-top: 6px; padding: 6px 10px; width: max-content; max-width: 280px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--panel); color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0; text-transform: none; white-space: normal; box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index: 6; }
         .has-note:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
@@ -414,7 +415,7 @@
         let helpDismissed = false;
         try { helpDismissed = localStorage.getItem(helpDismissedKey) === '1'; } catch (e) { /* storage blocked: show the box */ }
         if (help) {
-            help.hidden = helpDismissed;
+            help.hidden = helpDismissed || comments.length === 0;
             help.querySelector('.help-tooltip-close').addEventListener('click', () => {
                 help.hidden = true;
                 try { localStorage.setItem(helpDismissedKey, '1'); } catch (e) { /* dismissed for this view only */ }

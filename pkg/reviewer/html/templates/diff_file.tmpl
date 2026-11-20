@@ -10,7 +10,7 @@
     <summary class="file-header">{{$filePath}} ({{.File.LineLabel}})</summary>
 {{else}}
 <div class="diff-file">
-    <div class="file-header">{{$filePath}}</div>
+    <div class="file-header">{{$filePath}}{{if .File.Note}} <span class="file-note">{{.File.Note}}</span>{{end}}</div>
 {{end}}
     <div class="diff-table">
         {{/* Whole-file findings (LineNumber 0) render once, under the header.

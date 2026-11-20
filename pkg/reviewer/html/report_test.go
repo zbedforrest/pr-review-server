@@ -322,7 +322,11 @@ index 1111111..2222222 100644
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, ParseDiff(tc.diff))
+			got := ParseDiff(tc.diff)
+			for _, f := range got {
+				f.Note = ""
+			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -1442,7 +1446,7 @@ func TestPlanFiles_BudgetKeepsCommentedFilesAndDropsLaterUncommentedOnes(t *test
 	files := []*DiffFile{file("a.go", 40), file("b.go", 40), file("c.go", 500), file("d.go", 20), file("e.go", 30)}
 	comments := map[string]map[int][]CommentView{"c.go": {1: {{}}}, "e.go": {0: {{}}}}
 
-	views := planFiles(files, comments, 600)
+	views := planFiles(files, comments, 600+4*lineMarkupBytes)
 
 	var order []string
 	for _, v := range views {
@@ -1498,4 +1502,57 @@ func TestGenerateReport_PageChrome(t *testing.T) {
 	assert.Contains(t, report, `class="help-tooltip-close"`)
 	assert.Contains(t, report, "Findings on this page: 5.")
 	assert.Contains(t, report, "anchorIndex[counterDiv.id] = index")
+}
+
+func TestParseDiff_NotesWhyAFileHasNoLines(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/font.woff2 b/font.woff2",
+		"new file mode 100644",
+		"index 0000000..1111111",
+		"Binary files /dev/null and b/font.woff2 differ",
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"new file mode 100644",
+		"index 0000000..e69de29",
+		"diff --git a/run.sh b/run.sh",
+		"old mode 100644",
+		"new mode 100755",
+		"diff --git a/a.go b/a.go",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/a.go",
+		"@@ -0,0 +1 @@",
+		"+package a",
+	}, "\n")
+	notes := map[string]string{}
+	for _, f := range ParseDiff(diff) {
+		notes[f.Path] = f.Note
+	}
+	assert.Equal(t, map[string]string{"font.woff2": noteBinary, "pkg/__init__.py": noteEmpty, "run.sh": noteNoContent, "a.go": ""}, notes)
+
+	report, err := GenerateReportFrom(ReportInput{Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `font.woff2 <span class="file-note">Binary file not shown</span>`)
+	assert.Equal(t, 3, strings.Count(report, `class="file-note"`))
+}
+
+func TestGenerateReport_RendersCodeInTitlesAndDetail(t *testing.T) {
+	cond, expected := "Call `Save` with a full disk.", "`Handle` returns nil."
+	contract := &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact",
+		Headline: "`Save` errors are swallowed", CurrentImpact: "Failed `Save` calls report success today.", Falsifiability: "falsifiable",
+		FalsifiableCondition: &cond, ExpectedObservable: &expected, Uncertainty: "Only checked the disk path.",
+		SeverityRationale: "Data loss.", Subjects: []types.FindingSubject{{Kind: "symbol", Path: "a.go", Name: "Handle"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{{FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", CommentBody: "The write path drops errors.", FindingContract: contract}},
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `<span class="finding-title"><code>Save</code> errors are swallowed</span>`)
+	assert.Contains(t, report, "<p>Failed <code>Save</code> calls report success today.</p>")
+	assert.Contains(t, report, "Call <code>Save</code> with a full disk. Expected: <code>Handle</code> returns nil.")
+	assert.NotContains(t, report[strings.Index(report, "<body>"):strings.Index(report, "<script>")], "`")
+}
+
+func TestPlanFiles_KeepsTheHeaderOfAFileWithNoLines(t *testing.T) {
+	views := planFiles([]*DiffFile{{Path: "dist/font.woff2", Note: noteBinary}}, nil, 0)
+	assert.Equal(t, fileOpen, views[0].Mode)
 }
