@@ -235,3 +235,15 @@ func TestGenerateReport_DoesNotCountUnsettledFindingsAsConfirmed(t *testing.T) {
 	assert.Contains(t, report, ">1 could not verify</span>")
 	assert.Equal(t, 2, strings.Count(report, ">1 could not verify</span>"), "the header pill and the verification row")
 }
+
+func TestVerifyMarkFor_SaysWhenTheGateLoweredTheSeverity(t *testing.T) {
+	lowered := verifyMarkFor(&types.Verification{Status: types.VerifySkipped, Gate: "OK", GateApplied: true, GateLoweredFrom: "medium", GateReason: "Real but minor."})
+	assert.Equal(t, verifyGradedOK, lowered.VerifyPill)
+	assert.Equal(t, []string{
+		"Lowered from MEDIUM by the quality gate: the finding holds, the severity was overstated.",
+	}, lowered.VerifyReasons)
+
+	shadow := verifyMarkFor(&types.Verification{Status: types.VerifySkipped, Gate: "OK", GateLoweredFrom: "MEDIUM"})
+	assert.Empty(t, shadow.VerifyReasons, "a grade that was only recorded lowered nothing")
+	assert.Empty(t, verifyMarkFor(&types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "GOOD", GateApplied: true}).VerifyReasons)
+}
