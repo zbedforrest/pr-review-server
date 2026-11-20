@@ -321,7 +321,11 @@ index 1111111..2222222 100644
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, ParseDiff(tc.diff))
+			got := ParseDiff(tc.diff)
+			for _, f := range got {
+				f.Note = ""
+			}
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -1296,4 +1300,35 @@ func TestGenerateReport_ProfileLineInHeader(t *testing.T) {
 	in.Profile = ""
 	report = renderLayoutFixture(t, in)
 	assert.NotContains(t, report, "Profile:")
+}
+
+func TestParseDiff_NotesWhyAFileHasNoLines(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/font.woff2 b/font.woff2",
+		"new file mode 100644",
+		"index 0000000..1111111",
+		"Binary files /dev/null and b/font.woff2 differ",
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"new file mode 100644",
+		"index 0000000..e69de29",
+		"diff --git a/run.sh b/run.sh",
+		"old mode 100644",
+		"new mode 100755",
+		"diff --git a/a.go b/a.go",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/a.go",
+		"@@ -0,0 +1 @@",
+		"+package a",
+	}, "\n")
+	notes := map[string]string{}
+	for _, f := range ParseDiff(diff) {
+		notes[f.Path] = f.Note
+	}
+	assert.Equal(t, map[string]string{"font.woff2": noteBinary, "pkg/__init__.py": noteEmpty, "run.sh": noteNoContent, "a.go": ""}, notes)
+
+	report, err := GenerateReportFrom(ReportInput{Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0)})
+	assert.NoError(t, err)
+	assert.Contains(t, report, `font.woff2 <span class="file-note">Binary file not shown</span>`)
+	assert.Equal(t, 3, strings.Count(report, `class="file-note"`))
 }

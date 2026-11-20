@@ -69,7 +69,15 @@ type Line struct {
 type DiffFile struct {
 	Path  string
 	Lines []Line
+	// Note says why a file has no lines to show.
+	Note string
 }
+
+const (
+	noteBinary    = "Binary file not shown"
+	noteEmpty     = "Empty file"
+	noteNoContent = "No content changes"
+)
 
 // CommentView is a wrapper for a comment with additional view-related data.
 // CommentBody has the legacy provenance preface stripped.
@@ -669,6 +677,12 @@ func ParseDiff(diff string) []*DiffFile {
 				} else if oldPath != "" {
 					currentFile.Path = oldPath
 				}
+			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
+				currentFile.Note = noteBinary
+			case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "deleted file mode "):
+				if currentFile.Note == "" {
+					currentFile.Note = noteEmpty
+				}
 			case strings.HasPrefix(line, "rename to "):
 				currentFile.Path = unquoteGitPath(strings.TrimPrefix(line, "rename to "))
 			case strings.HasPrefix(line, "copy to "):
@@ -702,6 +716,14 @@ func ParseDiff(diff string) []*DiffFile {
 			})
 			oldLine++
 			newLine++
+		}
+	}
+	for _, f := range files {
+		switch {
+		case len(f.Lines) > 0:
+			f.Note = ""
+		case f.Note == "":
+			f.Note = noteNoContent
 		}
 	}
 

@@ -1,7 +1,7 @@
 {{define "diff-file"}}
 {{$filePath := .File.Path}}
 <div class="diff-file">
-    <div class="file-header">{{$filePath}}</div>
+    <div class="file-header">{{$filePath}}{{if .File.Note}} <span class="file-note">{{.File.Note}}</span>{{end}}</div>
     <div class="diff-table">
         {{/* Whole-file findings (LineNumber 0) render once, under the header.
              Keying them per-line would repeat them on every deleted line,
