@@ -332,6 +332,11 @@ func sortBySeverity(fs []payload.Finding) {
 		if ra, rb := severityRank(a.Severity), severityRank(b.Severity); ra != rb {
 			return ra > rb
 		}
+		// A lowered finding takes an inline slot only after every finding the
+		// gate left at this severity.
+		if la, lb := gateLowered(a), gateLowered(b); la != lb {
+			return lb
+		}
 		if a.File != b.File {
 			return a.File < b.File
 		}
@@ -348,7 +353,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 		if !Shown(f) || alreadyPublished[f.ID] {
 			continue
 		}
-		if f.Line > 0 && commentable[f.File][f.Line] && (gateEndorsed(f) || severityRank(f.Severity) >= minRank && worthInline(f)) {
+		if f.Line > 0 && commentable[f.File][f.Line] && (gateEndorsed(f) || severityRank(eligibleSeverity(f)) >= minRank && worthInline(f)) {
 			candidates = append(candidates, f)
 		} else {
 			rest = append(rest, f)
@@ -380,10 +385,25 @@ func Shown(f payload.Finding) bool {
 	if gateEndorsed(f) {
 		return true
 	}
+	severity := eligibleSeverity(f)
 	if !types.DiscountGateEnabled() {
-		return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
+		return severity == "critical" || (severity == "medium" && worthInline(f))
 	}
-	return (f.Severity == "critical" || f.Severity == "medium") && worthInline(f)
+	return (severity == "critical" || severity == "medium") && worthInline(f)
+}
+
+// eligibleSeverity is the severity a finding is placed by: the one it had
+// before the quality gate lowered it. Lowering corrects the label a reader
+// sees and the merge confidence, not where the point is posted.
+func eligibleSeverity(f payload.Finding) string {
+	if v := f.Verification; v != nil && v.GateApplied && v.GateLoweredFrom != "" {
+		return strings.ToLower(v.GateLoweredFrom)
+	}
+	return f.Severity
+}
+
+func gateLowered(f payload.Finding) bool {
+	return eligibleSeverity(f) != f.Severity
 }
 
 // worthInline is the Greptile-style bar for occupying a reviewer's diff view:

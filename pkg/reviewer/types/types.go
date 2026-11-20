@@ -106,6 +106,9 @@ type Verification struct {
 	GateReason   string `json:"gate_reason,omitempty"`
 	GateApplied  bool   `json:"gate_applied,omitempty"`
 	GateDemoted  bool   `json:"gate_demoted,omitempty"`
+	// GateLoweredFrom is the severity a finding had before the gate, grading
+	// it OK but overstated, lowered it one step.
+	GateLoweredFrom string `json:"gate_lowered_from,omitempty"`
 	// DemotedFrom is the severity a finding judged not worth posting had
 	// before it was posted as a LOW note instead.
 	DemotedFrom   string           `json:"demoted_from,omitempty"`

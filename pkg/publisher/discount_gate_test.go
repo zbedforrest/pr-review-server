@@ -168,3 +168,38 @@ func TestShown_GateGoodPostsAnySeverityInlineOnlyWithItsSwitch(t *testing.T) {
 		t.Fatal("an OK grade is shown")
 	}
 }
+
+func TestSelect_GateLoweredFindingKeepsItsPlaceButYieldsTheSlot(t *testing.T) {
+	t.Setenv(GateEndorsedInlineEnv, "true")
+	commentable := map[string]map[int]bool{"a.go": {1: true, 2: true, 3: true, 4: true}}
+	worthy := func(id string, line int, severity string) payload.Finding {
+		f := fp(id, severity, "a.go", line, "The handler drops the error "+id+".", "agent")
+		f.FindingContract = falsifiableTestContract("production_behavior", "current_impact", "Errors are lost today.", "Confident.")
+		f.FindingContractStatus = "valid"
+		return f
+	}
+	lowered := worthy("lowered", 1, "low")
+	lowered.Verification = &types.Verification{Gate: "OK", GateCategory: "overstated-severity", GateApplied: true, GateLoweredFrom: "MEDIUM"}
+	endorsed := worthy("endorsed", 2, "low")
+	endorsed.Verification = &types.Verification{Gate: "GOOD", GateApplied: true}
+	medium := worthy("medium", 3, "medium")
+
+	if !Shown(lowered) {
+		t.Fatal("a lowered MEDIUM lost the placement it had before lowering")
+	}
+	if got := ids(Select([]payload.Finding{lowered, endorsed, medium}, nil, commentable, DefaultPolicy()).Inline); len(got) != 3 || got[0] != "medium" || got[1] != "endorsed" || got[2] != "lowered" {
+		t.Fatalf("inline = %v, want medium, endorsed, then lowered", got)
+	}
+	capped := DefaultPolicy()
+	capped.InlineCap = 2
+	sel := Select([]payload.Finding{lowered, endorsed, medium}, nil, commentable, capped)
+	if got := ids(sel.Inline); len(got) != 2 || got[1] != "endorsed" {
+		t.Fatalf("inline = %v under a cap of 2, want the lowered finding to give up its slot", got)
+	}
+	if got := ids(sel.Annotations); len(got) != 1 || got[0] != "lowered" {
+		t.Fatalf("annotations = %v, want the lowered finding as a summary bullet", got)
+	}
+	if c := Confidence([]payload.Finding{lowered}, false); c != Confidence(nil, false) {
+		t.Fatalf("a lowered finding moved the merge confidence to %d", c)
+	}
+}
