@@ -36,6 +36,10 @@
 <div class="verification-note verify-note-{{.VerifyClass}}"><span class="verification-note-label">{{.VerifyPill}}</span>{{range .VerifyReasons}}<div class="verification-reason">{{. | markdownInline}}</div>{{end}}</div>
 {{end}}{{end}}
 
+{{define "held-note"}}{{if .HeldReason}}
+<div class="held-note"><span class="held-note-label">Not posted</span> PRism held this back because {{.HeldReason}}.</div>
+{{end}}{{end}}
+
 {{define "record-rows"}}
         {{range .}}
         <div class="record-row">
@@ -44,7 +48,7 @@
                 {{if .Anchor}}<a class="record-location" href="#{{.Anchor}}">{{.Location}}</a>{{else}}<span class="record-location">{{.Location}}</span>{{end}}
             </div>
             {{if .Claim}}<div class="record-claim">{{.Claim | markdownify}}</div>{{end}}
-            {{if .Reason}}<div class="record-reason">{{if .Anchor}}Reviewer's objection{{else}}Rejected because{{end}}: {{.Reason | markdownInline}}</div>{{end}}
+            {{if .Reason}}<div class="record-reason">{{if .Label}}{{.Label}}{{else if .Anchor}}Reviewer's objection{{else}}Rejected because{{end}}: {{.Reason | markdownInline}}</div>{{end}}
             {{if .Evidence}}<div class="record-evidence">Evidence:{{range .Evidence}} <span class="evidence-ref">{{.}}</span>{{end}}</div>{{end}}
         </div>
         {{end}}
@@ -95,7 +99,7 @@
         <div class="verdict-main">
             <div class="verdict-text">{{.Verdict}}</div>
             {{if .PostedLine}}<div class="verdict-upshot">{{.PostedLine}}</div>{{end}}
-            {{if .Upshot}}<div class="verdict-upshot">{{.Upshot}}</div>{{end}}
+            {{if .Upshot}}<div class="verdict-upshot">{{.Upshot | markdownInline}}</div>{{end}}
         </div>
         <div class="verdict-counts">
             <span class="count-pill count-confirmed">{{.ConfirmedCount}} confirmed</span>
@@ -103,7 +107,7 @@
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
-            {{if .WithheldCount}}<span class="count-pill count-withheld has-note" tabindex="0" data-note="Verification or publishing hygiene kept these off the PR, so they are not shown here either.">{{.WithheldCount}} withheld</span>{{end}}
+            {{if .HeldCount}}<a class="count-pill count-withheld" href="#held-back" title="{{if .HeldInDiff}}Marked HELD BACK where they sit in the diff.{{else}}Listed at the end of the page.{{end}}">{{.HeldCount}} held back</a>{{end}}
         </div>
         {{if .VerifyCounts}}
         <div class="verify-counts">
@@ -140,7 +144,7 @@
     <div class="findings-index">
         <h2>Findings</h2>
         {{range .FindingGroups}}
-        <h3>{{.Name}}</h3>
+        <h3{{if eq .Name "Held back"}} id="held-back"{{end}}>{{.Name}}</h3>
         {{if .Hint}}<p class="group-hint">{{.Hint}}</p>{{end}}
         <ul class="findings-list">
             {{range .Rows}}
@@ -165,6 +169,7 @@
             {{template "comment-counter" .}}
             <div class="general-body">
                 {{template "finding-body" .}}
+                {{template "held-note" .}}
                 {{template "verification-note" .}}
             </div>
         </div>
@@ -200,6 +205,7 @@
                         <div class="comment-body">
                             {{template "comment-counter" .}}
                             {{template "finding-body" .}}
+                {{template "held-note" .}}
                 {{template "verification-note" .}}
                         </div>
                     </div>
@@ -208,6 +214,14 @@
         </div>
         {{end}}
     </div>
+    {{end}}
+
+    {{if .Held}}
+    <details class="review-details held-back" id="held-back">
+        <summary>Held back ({{len .Held}})</summary>
+        <p class="group-hint">The review found these but PRism kept them off the PR. Each says why.</p>
+        {{template "record-rows" .Held}}
+    </details>
     {{end}}
 
     <details class="review-details">
@@ -267,7 +281,7 @@
         </table>
         </div>
         <p class="generation-meta">Kept, revised, good and ok findings can post; held back, refuted and bad ones do not.</p>
-        <p class="generation-meta">Findings on this page: {{.ShownCount}}.{{if .WithheldCount}} Held back by verification, the quality gate or publishing: {{.WithheldCount}}.{{end}}</p>
+        <p class="generation-meta">Findings on this page: {{.ShownCount}}.{{if .HeldCount}} Held back by verification, the quality gate or publishing: {{.HeldCount}}.{{end}}</p>
         {{else}}
         <p class="generation-meta">Model: {{.ModelName}}</p>
         <p class="generation-meta">Input tokens: {{.PromptTokenCount}} · Output tokens: {{.CandidatesTokenCount}}</p>
