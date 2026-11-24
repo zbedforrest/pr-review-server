@@ -97,6 +97,8 @@ type CommentView struct {
 	Detail       FindingDetail
 	// AlsoCovers titles the first-pass claims folded into this finding.
 	AlsoCovers []string
+	// HeldReason says why the publisher keeps this finding off the PR.
+	HeldReason string
 	VerifyMark
 }
 
@@ -298,9 +300,10 @@ const (
 	groupConfirmed  = "Confirmed"
 	groupNeedsCheck = "Needs verification"
 	groupMechanical = "Mechanical signals"
+	groupHeld       = "Held back"
 )
 
-var indexGroupOrder = []string{groupInline, groupNotes, groupConfirmed, groupNeedsCheck, groupMechanical}
+var indexGroupOrder = []string{groupInline, groupNotes, groupConfirmed, groupNeedsCheck, groupMechanical, groupHeld}
 
 func severityRank(severity string) int {
 	switch severityClass(severity) {
@@ -342,6 +345,7 @@ type FindingGroup struct {
 var groupHints = map[string]string{
 	groupInline: "Clear the bar for an inline comment; past the per-PR cap they post as summary bullets instead.",
 	groupNotes:  "Posted folded into the PR summary rather than inline.",
+	groupHeld:   "Would not have posted to the PR; each card says why.",
 }
 
 // RecordView is one inactive record in review details: a first-pass claim
@@ -355,6 +359,8 @@ type RecordView struct {
 	Evidence   []string
 	// Anchor links to the finding's card when the record describes one on the page.
 	Anchor string
+	// Label heads Reason; empty picks the wording from Anchor.
+	Label string
 }
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
@@ -1025,9 +1031,11 @@ type ReportInput struct {
 }
 
 // PublishView is what the publisher will make of the review, worked out
-// before it posts. Withhold reports whether it keeps a finding off the PR;
-// such findings are left out of the page entirely and only counted (nil
-// keeps all). Confidence is the merge confidence the PR summary reports,
+// before it posts. Held says why it keeps a finding off the PR, "" when it
+// posts (nil holds nothing). When the run posts, held findings leave the
+// diff for a folded list at the end of the page; when nothing reaches the PR
+// the page is the only place the review can be read, so they stay in the
+// diff, marked. Confidence is the merge confidence the PR summary reports,
 // 0 when unknown.
 // Inline reports whether a finding clears the bar for an inline comment, so
 // the index can split what posts inline from what folds into the summary.
@@ -1035,7 +1043,7 @@ type ReportInput struct {
 // nil or "" falls back to the report's own title. NotPublished says why the
 // review did not post ("the PR is a draft"), "" when it posted or will.
 type PublishView struct {
-	Withhold     func(types.LineComment) bool
+	Held         func(types.LineComment) string
 	Inline       func(types.LineComment) bool
 	Confidence   int
 	Title        func(types.LineComment) string
@@ -1045,7 +1053,7 @@ type PublishView struct {
 // known reports whether the view says what reached the PR; without it the
 // page is the reviewer's own account and keeps the reviewer's summary.
 func (v PublishView) known() bool {
-	return v.NotPublished != "" || v.Withhold != nil
+	return v.NotPublished != "" || v.Held != nil
 }
 
 func (v PublishView) titleOf(c types.LineComment) string {
@@ -1064,28 +1072,48 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
+// heldOf is why the publisher keeps an active finding off the PR, "" when
+// it posts.
+func (v PublishView) heldOf(c types.LineComment) string {
+	if v.Held == nil || c.Inactive || c.FilePath == "SUMMARY" {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSpace(v.Held(c)), ".")
+}
+
 // postedLine states what reached the PR, from the publisher's own counts.
-func postedLine(v PublishView, inline, notes int, shortSHA string) string {
+func postedLine(v PublishView, inline, notes, held int, shortSHA string) string {
 	if !v.known() {
 		return ""
 	}
 	if v.NotPublished != "" {
-		return "Not posted to the PR: " + strings.TrimSuffix(v.NotPublished, ".") + "."
+		line := "Not posted to the PR: " + strings.TrimSuffix(v.NotPublished, ".") + "."
+		if held > 0 {
+			line += " Findings marked HELD BACK would not have posted either; each says why."
+		}
+		return line
 	}
-	if v.Inline == nil && notes > 0 {
-		return "Posted " + plural(notes, "comment") + "."
-	}
+
 	var parts []string
-	if inline > 0 {
-		parts = append(parts, plural(inline, "inline comment"))
+	switch {
+	case v.Inline == nil && notes > 0:
+		parts = append(parts, plural(notes, "comment"))
+	default:
+		if inline > 0 {
+			parts = append(parts, plural(inline, "inline comment"))
+		}
+		if notes > 0 {
+			parts = append(parts, plural(notes, "summary note"))
+		}
 	}
-	if notes > 0 {
-		parts = append(parts, plural(notes, "summary note"))
-	}
+	line := "Posted " + strings.Join(parts, " and ") + "."
 	if len(parts) == 0 {
-		return "No comments posted on " + shortSHA + "."
+		line = "No comments posted on " + shortSHA + "."
 	}
-	return "Posted " + strings.Join(parts, " and ") + "."
+	if held > 0 {
+		line += " " + plural(held, "finding") + " held back, listed at the end of the page."
+	}
+	return line
 }
 
 const topFindingsShown = 3
@@ -1249,22 +1277,35 @@ func verdictClass(verdict string) string {
 	return "neutral"
 }
 
-// withheldOut drops the active findings the publisher keeps off the PR and
-// returns how many it dropped. Summaries and inactive records are kept.
-func withheldOut(comments []types.LineComment, withhold func(types.LineComment) bool) ([]types.LineComment, int) {
-	if withhold == nil {
-		return comments, 0
-	}
-	kept := make([]types.LineComment, 0, len(comments))
-	n := 0
+// splitHeld separates the active findings the publisher keeps off the PR.
+// Summaries and inactive records stay with the rest.
+func splitHeld(comments []types.LineComment, v PublishView) (posted, held []types.LineComment) {
 	for _, c := range comments {
-		if !c.Inactive && c.FilePath != "SUMMARY" && withhold(c) {
-			n++
-			continue
+		if v.heldOf(c) != "" {
+			held = append(held, c)
+		} else {
+			posted = append(posted, c)
 		}
-		kept = append(kept, c)
 	}
-	return kept, n
+	return posted, held
+}
+
+// heldViews turns the held findings into the folded rows at the end of a
+// page whose run posted: the claim, and why it did not post.
+func heldViews(held []types.LineComment, v PublishView, refs idRefs) []RecordView {
+	out := make([]RecordView, 0, len(held))
+	for _, c := range held {
+		reasons := []string{"PRism held it back because " + v.heldOf(c) + "."}
+		reasons = append(reasons, verifyMarkFor(c.Verification).VerifyReasons...)
+		claim := payload.StripProvenanceNote(c.CommentBody)
+		if d := displayOf(c); d != nil && strings.TrimSpace(d.Body) != "" {
+			claim = d.Body
+		}
+		out = append(out, RecordView{Severity: severityLabel(c.Importance), FilePath: c.FilePath, LineNumber: c.LineNumber,
+			Claim: refs.markdown(claim), Reason: refs.plain(strings.Join(reasons, " ")), Label: "Not posted"})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return severityRank(out[i].Severity) < severityRank(out[j].Severity) })
+	return out
 }
 
 // confidenceClass colors the verdict block by merge confidence the way the
@@ -1439,8 +1480,14 @@ func generateReport(in ReportInput) (string, error) {
 	var summaries []SummaryView
 	var generalComments []CommentView
 	var adjacentComments []CommentView
-	shown, withheld := withheldOut(in.Comments, in.Publish.Withhold)
-	activeComments, records := splitRecords(shown)
+	shown, held := splitHeld(in.Comments, in.Publish)
+	// With nothing on the PR, the page is the only place to read the review.
+	heldInDiff := in.Publish.NotPublished != ""
+	onPage := shown
+	if heldInDiff {
+		onPage, held = in.Comments, nil
+	}
+	activeComments, records := splitRecords(onPage)
 
 	verdict, upshot, suggestions := "", "", ""
 	var structured *types.SummaryBlock
@@ -1455,7 +1502,7 @@ func generateReport(in ReportInput) (string, error) {
 	refs := newIDRefs(in.Comments)
 	verifyTally, verifyMarks := map[string]int{}, map[string]VerifyMark{}
 	showVerification := verificationRan(activeComments)
-	published := in.Publish.known()
+	published := in.Publish.known() && !heldInDiff
 	splitByInline := in.Publish.Inline != nil && in.Publish.NotPublished == ""
 
 	// Cards are numbered before any is built so a body can link to a later
@@ -1516,7 +1563,7 @@ func generateReport(in ReportInput) (string, error) {
 	covers := alsoCovers(records, in.Publish.titleOf)
 	var posted []FixFirstItem
 	var disputed []RecordView
-	inlinePosted, notesPosted := 0, 0
+	inlinePosted, notesPosted, heldShown := 0, 0, 0
 
 	for i, comment := range activeComments {
 		if counters[i] == 0 {
@@ -1539,15 +1586,22 @@ func generateReport(in ReportInput) (string, error) {
 		}
 
 		group, pill, class := findingGroupFor(comment)
-		counts[group]++
-		if group == groupConfirmed && showVerification && verifyMarkFor(comment.Verification).VerifyPill == verifyUnavailable {
-			unsettled++
-		}
 		indexGroup := group
-		if group == groupConfirmed && splitByInline {
-			indexGroup = groupNotes
-			if in.Publish.Inline(comment) {
-				indexGroup = groupInline
+		view.HeldReason = in.Publish.heldOf(comment)
+		switch {
+		case view.HeldReason != "":
+			heldShown++
+			indexGroup, pill, class = groupHeld, "HELD BACK", "held"
+		default:
+			counts[group]++
+			if group == groupConfirmed && showVerification && verifyMarkFor(comment.Verification).VerifyPill == verifyUnavailable {
+				unsettled++
+			}
+			if group == groupConfirmed && splitByInline {
+				indexGroup = groupNotes
+				if in.Publish.Inline(comment) {
+					indexGroup = groupInline
+				}
 			}
 		}
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
@@ -1577,6 +1631,7 @@ func generateReport(in ReportInput) (string, error) {
 			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: title, order: view.Counter, VerifyMark: view.VerifyMark,
 		}
 		switch {
+		case indexGroup == groupHeld:
 		case indexGroup == groupInline:
 			inlinePosted++
 			posted = append(posted, fixFirstItem(view, title))
@@ -1644,7 +1699,7 @@ func generateReport(in ReportInput) (string, error) {
 			top = topFindings(posted)
 		}
 	case structured != nil:
-		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical], in.Publish.titleOf)
+		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical]+heldShown, in.Publish.titleOf)
 	}
 	rejected := recordViews(records, stateRejected, refs)
 
@@ -1679,7 +1734,9 @@ func generateReport(in ReportInput) (string, error) {
 		MechanicalCount      int
 		ShownCount           int
 		RejectedCount        int
-		WithheldCount        int
+		HeldCount            int
+		HeldInDiff           bool
+		Held                 []RecordView
 		VerifyCounts         []VerifyCount
 		Suggestions          string
 		FixFirst             []FixFirstItem
@@ -1715,15 +1772,17 @@ func generateReport(in ReportInput) (string, error) {
 		Verdict:              headline,
 		VerdictClass:         headlineClass,
 		Upshot:               upshot,
-		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, shortCommitSHA),
+		PostedLine:           postedLine(in.Publish, inlinePosted, notesPosted, heldShown+len(held), shortCommitSHA),
 		TopFindings:          top,
 		ConfirmedCount:       counts[groupConfirmed] - unsettled,
 		UnsettledCount:       unsettled,
 		UnverifiedCount:      counts[groupNeedsCheck],
 		MechanicalCount:      counts[groupMechanical],
-		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical],
+		ShownCount:           counts[groupConfirmed] + counts[groupNeedsCheck] + counts[groupMechanical] + heldShown,
 		RejectedCount:        len(rejected),
-		WithheldCount:        withheld,
+		HeldCount:            heldShown + len(held),
+		HeldInDiff:           heldInDiff,
+		Held:                 heldViews(held, in.Publish, refs),
 		VerifyCounts:         verifyCounts(verifyMarks, verifyTally),
 		Suggestions:          refs.markdown(suggestions),
 		FixFirst:             actions,

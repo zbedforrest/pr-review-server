@@ -17,7 +17,7 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
-func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
+func TestReportHeldMatchesWhatThePublisherHolds(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
@@ -47,10 +47,13 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 		result.Comments = append(result.Comments, tc.c)
 	}
 	view := p.reportPublishView(result)
-	require.NotNil(t, view.Withhold)
+	require.NotNil(t, view.Held)
 	for _, tc := range cases {
-		assert.Equal(t, tc.held, view.Withhold(tc.c), tc.name)
+		assert.Equal(t, tc.held, view.Held(tc.c) != "", tc.name)
 	}
+	assert.Equal(t, "the verifier refuted it", view.Held(cases[2].c))
+	assert.Equal(t, "the verifier could not stand behind it as written", view.Held(cases[4].c))
+	assert.Equal(t, "the verifier judged it true but not worth posting", view.Held(cases[5].c))
 	assert.True(t, view.Inline(cases[0].c), "a gate-endorsed finding posts inline")
 	assert.False(t, view.Inline(cases[1].c), "an unverified finding does not")
 	assert.Equal(t, publisher.MergeConfidence(0, 1, false), view.Confidence, "only the endorsed MEDIUM counts; held ones do not")
@@ -58,7 +61,7 @@ func TestReportWithholdMatchesWhatThePublisherHolds(t *testing.T) {
 	assert.Empty(t, view.Title(types.LineComment{FilePath: "z.go", CommentBody: "Unknown."}))
 
 	t.Setenv(ReportHideWithheldEnv, "off")
-	assert.Nil(t, p.reportPublishView(result).Withhold)
+	assert.Nil(t, p.reportPublishView(result).Held)
 }
 
 func TestWithPublishDecisionsFollowsWhatTheRoundDid(t *testing.T) {
@@ -66,14 +69,19 @@ func TestWithPublishDecisionsFollowsWhatTheRoundDid(t *testing.T) {
 	threaded := types.LineComment{FilePath: "a.go", LineNumber: 2, CommentBody: "Has an inline thread."}
 	refuted := types.LineComment{FilePath: "a.go", LineNumber: 3, CommentBody: "Refuted before publishing."}
 	key := func(c types.LineComment) string { return payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody) }
-	before := html.PublishView{Withhold: func(c types.LineComment) bool { return c.CommentBody == refuted.CommentBody }, Confidence: 3}
+	before := html.PublishView{Held: func(c types.LineComment) string {
+		if c.CommentBody == refuted.CommentBody {
+			return "the verifier refuted it"
+		}
+		return ""
+	}, Confidence: 3}
 	rep := &publisher.Report{Confidence: 4, Decisions: &publisher.Decisions{
 		Dropped: map[string]bool{key(settled): true}, Inline: map[string]bool{key(threaded): true}}}
 
 	after := withPublishDecisions(before, rep)
-	assert.True(t, after.Withhold(settled))
-	assert.True(t, after.Withhold(refuted))
-	assert.False(t, after.Withhold(threaded))
+	assert.Equal(t, heldDropped, after.Held(settled))
+	assert.Equal(t, "the verifier refuted it", after.Held(refuted))
+	assert.Empty(t, after.Held(threaded))
 	assert.True(t, after.Inline(threaded))
 	assert.False(t, after.Inline(settled))
 	assert.Equal(t, 4, after.Confidence)
