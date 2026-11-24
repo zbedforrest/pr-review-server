@@ -668,7 +668,14 @@ func (p *Poller) sidecarConfidence(pr github.PullRequest, pl *payload.Payload) (
 		}
 		findings = publisher.WithoutDismissed(findings, previous)
 	}
-	return publisher.Confidence(findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
+	pol := p.publishPolicy()
+	backed := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if publisher.HoldReason(f, pol) == "" {
+			backed = append(backed, f)
+		}
+	}
+	return publisher.Confidence(backed, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
 }
 
 // storeMergeConfidence writes the score for the completed projection runID
