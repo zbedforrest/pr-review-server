@@ -70,6 +70,31 @@ const (
 	ensembleMinSupportCritical = 2
 )
 
+// LiteEnsembleModelEnv and LiteEnsembleEffortEnv let a deployment run lite's
+// ensemble on another OpenRouter model or reasoning effort without a build.
+const (
+	LiteEnsembleModelEnv  = "LITE_ENSEMBLE_MODEL"
+	LiteEnsembleEffortEnv = "LITE_ENSEMBLE_EFFORT"
+)
+
+// LiteEnsembleModel is the agent model lite's ensemble runs.
+func LiteEnsembleModel() string {
+	if model := strings.TrimSpace(os.Getenv(LiteEnsembleModelEnv)); model != "" {
+		return model
+	}
+	return EnsembleModel
+}
+
+// LiteEnsembleEffort is the reasoning effort of lite's ensemble runs; a
+// value the OpenRouter backend does not take leaves the default.
+func LiteEnsembleEffort() string {
+	switch effort := strings.ToLower(strings.TrimSpace(os.Getenv(LiteEnsembleEffortEnv))); effort {
+	case "low", "medium", "high", "xhigh", "max":
+		return effort
+	}
+	return ensembleEffort
+}
+
 // Ensemble configures a multi-agent review: Runs agents with the Agent
 // settings, merged once Quorum of them have produced valid output. A run
 // with no valid output counts against the quorum; with fewer than MinValid
@@ -196,7 +221,7 @@ func Expand(profile string, base Effective) (Effective, error) {
 		effective.BugMemory = false
 	case ProfileLite:
 		effective.Agent = Agent{
-			Enabled: true, Backend: ensembleBackend, Model: EnsembleModel, Effort: ensembleEffort,
+			Enabled: true, Backend: ensembleBackend, Model: LiteEnsembleModel(), Effort: LiteEnsembleEffort(),
 			WallClockSeconds: ensembleWallClockSecs, MaxTurns: ensembleMaxTurns,
 			Tools: ToolsDefault, Prompt: PromptLiteArmAV2Budget,
 		}

@@ -61,3 +61,24 @@ func TestLiteHygieneEnabledDefaultsOnAndFalseDisables(t *testing.T) {
 		t.Fatal("LITE_HYGIENE=false should disable it")
 	}
 }
+
+func TestLiteEnsembleModelAndEffortFollowTheDeployment(t *testing.T) {
+	t.Setenv(LiteEnsembleModelEnv, " deepseek/deepseek-v4.1-flash-1017 ")
+	t.Setenv(LiteEnsembleEffortEnv, "XHigh")
+	e, err := Expand(ProfileLite, Effective{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Agent.Model != "deepseek/deepseek-v4.1-flash-1017" || e.Agent.Effort != "xhigh" {
+		t.Fatalf("agent = %+v", e.Agent)
+	}
+	base, _ := Expand(ProfileLite, Effective{})
+	if d := DescribeProfile(e, base); d.Custom() {
+		t.Fatalf("the deployment's lite is not a custom run: %+v", d)
+	}
+
+	t.Setenv(LiteEnsembleEffortEnv, "extreme")
+	if got := LiteEnsembleEffort(); got != "high" {
+		t.Fatalf("an unknown effort must leave the default, got %q", got)
+	}
+}
