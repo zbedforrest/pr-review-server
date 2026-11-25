@@ -116,6 +116,21 @@ func (v CommentView) HasDetail() bool {
 	return v.Detail != FindingDetail{}
 }
 
+// Folded reports whether the card collapses to a small marker: the
+// publisher keeps it off the PR.
+func (v CommentView) Folded() bool {
+	return v.HeldReason != ""
+}
+
+// FoldLabel is the folded card's marker text, naming the verdict when one
+// caused the hold.
+func (v CommentView) FoldLabel() string {
+	if v.VerifyClass == "refuted" || v.VerifyClass == "disputed" {
+		return "Held back: " + strings.ToLower(v.VerifyPill)
+	}
+	return "Held back"
+}
+
 // displayOf is the rewrite GitHub posts for c, or nil when it has none.
 func displayOf(c types.LineComment) *types.Display {
 	if c.Display == nil || strings.TrimSpace(c.Display.Title) == "" || strings.TrimSpace(c.Display.Body) == "" {
@@ -1080,6 +1095,15 @@ func (v PublishView) heldOf(c types.LineComment) string {
 	return strings.TrimSuffix(strings.TrimSpace(v.Held(c)), ".")
 }
 
+func allFolded(cards []CommentView) bool {
+	for _, c := range cards {
+		if !c.Folded() {
+			return false
+		}
+	}
+	return len(cards) > 0
+}
+
 // postedLine states what reached the PR, from the publisher's own counts.
 func postedLine(v PublishView, inline, notes, held int, heldInDiff bool, shortSHA string) string {
 	if !v.known() {
@@ -1088,7 +1112,7 @@ func postedLine(v PublishView, inline, notes, held int, heldInDiff bool, shortSH
 	if v.NotPublished != "" {
 		line := "Not posted to the PR: " + strings.TrimSuffix(v.NotPublished, ".") + "."
 		if held > 0 {
-			line += " Findings marked HELD BACK would not have posted either; each says why."
+			line += " Held-back findings are folded where they sit in the diff; they would not have posted either."
 		}
 		return line
 	}
@@ -1111,7 +1135,7 @@ func postedLine(v PublishView, inline, notes, held int, heldInDiff bool, shortSH
 	}
 	switch {
 	case held > 0 && heldInDiff:
-		line += " " + plural(held, "finding") + " held back, marked HELD BACK in the diff; each says why."
+		line += " " + plural(held, "finding") + " held back, folded where they sit in the diff."
 	case held > 0:
 		line += " " + plural(held, "finding") + " held back, listed at the end of the page."
 	}
@@ -1829,6 +1853,7 @@ func generateReport(in ReportInput) (string, error) {
 	funcMap := template.FuncMap{
 		"markdownify":    renderMarkdown,
 		"markdownInline": renderMarkdownInline,
+		"allFolded":      allFolded,
 		"dict": func(values ...interface{}) (map[string]interface{}, error) {
 			if len(values)%2 != 0 {
 				return nil, fmt.Errorf("dict expects an even number of arguments: got %d", len(values))

@@ -1501,7 +1501,7 @@ func TestGenerateReport_PageChrome(t *testing.T) {
 	assert.Contains(t, report, "@media (max-width: 760px)")
 	assert.Contains(t, report, `class="help-tooltip-close"`)
 	assert.Contains(t, report, "Findings on this page: 5.")
-	assert.Contains(t, report, "anchorIndex[counterDiv.id] = index")
+	assert.Contains(t, report, "anchorIndex[anchor] = index")
 }
 
 func TestParseDiff_NotesWhyAFileHasNoLines(t *testing.T) {
@@ -1555,4 +1555,13 @@ func TestGenerateReport_RendersCodeInTitlesAndDetail(t *testing.T) {
 func TestPlanFiles_KeepsTheHeaderOfAFileWithNoLines(t *testing.T) {
 	views := planFiles([]*DiffFile{{Path: "dist/font.woff2", Note: noteBinary}}, nil, 0)
 	assert.Equal(t, fileOpen, views[0].Mode)
+}
+
+func TestReportScriptOpensFoldsAndSkipsThemOnJK(t *testing.T) {
+	report := renderLayoutFixture(t, publishedStateFixture())
+
+	assert.Contains(t, report, "c.closest('details.held-fold')")
+	assert.Contains(t, report, "if (fold) fold.open = true;")
+	assert.Contains(t, report, "if (!isClosedFold(comments[next]))")
+	assert.Contains(t, report, "a.count-withheld")
 }

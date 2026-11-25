@@ -277,12 +277,13 @@ func TestGenerateReport_KeepsHeldFindingsInTheDiffWhenNothingPosts(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	assert.Contains(t, report, "Not posted to the PR: PRism does not post on this author&#39;s pull requests. Findings marked HELD BACK would not have posted either; each says why.")
+	assert.Contains(t, report, "Not posted to the PR: PRism does not post on this author&#39;s pull requests. Held-back findings are folded where they sit in the diff; they would not have posted either.")
 	assert.Contains(t, report, `<div class="verdict-upshot">Correct for 5.2.0; the 6.x detection is unproven.</div>`)
 	assert.Contains(t, report, ">0 confirmed</span>")
 	assert.Contains(t, report, ">1 held back</a>")
-	assert.Contains(t, report, `<h3 id="held-back">Held back</h3>`)
-	assert.Contains(t, report, `<div class="comment-counter" id="finding-1">`)
+	assert.Contains(t, report, `<details class="held-index" id="held-back"><summary><span class="status-pill status-held">1 held back</span></summary>`)
+	assert.Contains(t, report, `<details class="held-fold" id="finding-1">`)
+	assert.Contains(t, report, `<span class="status-pill status-held">Held back: low value</span>`)
 	assert.Contains(t, report, `<span class="status-pill status-held">HELD BACK</span>`)
 	assert.Contains(t, report, "PRism held this back because the verifier held it back.")
 	assert.Contains(t, report, "Not worth posting: Only matters after the upgrade.")
@@ -326,10 +327,77 @@ func TestGenerateReport_KeepsHeldFindingsInTheDiffWhenTheRunPostsNothingElse(t *
 	})
 	require.NoError(t, err)
 
-	assert.Contains(t, report, `<div class="verdict-upshot">No comments posted on abcdef1. 1 finding held back, marked HELD BACK in the diff; each says why.</div>`)
+	assert.Contains(t, report, `<div class="verdict-upshot">No comments posted on abcdef1. 1 finding held back, folded where they sit in the diff.</div>`)
 	assert.Contains(t, report, `<span class="status-pill status-held">HELD BACK</span>`)
 	assert.Contains(t, report, "PRism held this back because the verifier refuted it.")
 	assert.NotContains(t, report, "F1 blocks the merge.")
 	assert.NotContains(t, report, `class="fix-first"`)
 	assert.NotContains(t, report, `<details class="review-details held-back"`)
+}
+
+func TestGenerateReport_FoldsHeldCardsInTheDiff(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,4 @@\n package a\n+func Handle() {}\n+func Other() {}\n+func Third() {}\n"
+	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", State: stateConfirmed,
+		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Other drops the error.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{refuted, kept},
+		Publish:  PublishView{Held: heldWhenSuppressed, Confidence: 5, NotPublished: "the pull request is a draft"},
+	})
+	require.NoError(t, err)
+
+	fold := strings.Index(report, `<details class="held-fold" id="finding-1"><summary class="held-marker" title="the verifier refuted it"><span class="status-pill status-held">Held back: refuted</span></summary>`)
+	require.GreaterOrEqual(t, fold, 0)
+	assert.Greater(t, strings.LastIndex(report, "Handle leaks the session token."), fold)
+	assert.NotContains(t, report, `<div class="comment-counter" id="finding-1">`)
+	assert.NotContains(t, report, `class="held-fold" id="finding-1" open`)
+	assert.Equal(t, 1, strings.Count(report, `class="comment-row held-only"`))
+	assert.Contains(t, report, `<div class="comment-counter" id="finding-2">`)
+	assert.NotContains(t, report, `id="finding-2"><summary`)
+}
+
+func TestGenerateReport_FoldsTheHeldIndexGroupOnly(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", State: stateConfirmed,
+		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Other drops the error.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{refuted, kept},
+		Publish:  PublishView{Held: heldWhenSuppressed, Confidence: 5, NotPublished: "the pull request is a draft"},
+	})
+	require.NoError(t, err)
+
+	index := report[strings.Index(report, `class="findings-index"`):]
+	index = index[:strings.Index(index, "</div>")]
+	group := strings.Index(index, `<details class="held-index" id="held-back">`)
+	require.GreaterOrEqual(t, group, 0)
+	assert.Greater(t, strings.Index(index, `href="#finding-1"`), group)
+	assert.Less(t, strings.Index(index, `href="#finding-2"`), group)
+	assert.NotContains(t, index, `<h3 id="held-back">`)
+}
+
+func TestGenerateReport_FoldsHeldGeneralAndAdjacentComments(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	general := types.LineComment{ID: "F1", FilePath: "GENERAL", Importance: "LOW", State: stateConfirmed,
+		CommentBody: "The package has no tests.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	offDiff := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 40, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Close is never called.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{general, offDiff},
+		Publish:  PublishView{Held: heldWhenSuppressed, Confidence: 5, NotPublished: "the pull request is a draft"},
+	})
+	require.NoError(t, err)
+
+	generalFold := strings.Index(report, `<details class="held-fold" id="finding-`)
+	require.GreaterOrEqual(t, generalFold, 0)
+	assert.Greater(t, strings.Index(report, `class="general-comment"`), generalFold)
+	adjacentFold := strings.Index(report, `<details class="diff-file held-fold" id="finding-`)
+	require.GreaterOrEqual(t, adjacentFold, 0)
+	assert.Greater(t, strings.LastIndex(report, "Close is never called."), adjacentFold)
+	assert.Contains(t, report, `a.go:40 <span class="status-pill status-held">Held back: refuted</span></summary>`)
 }
