@@ -428,3 +428,51 @@ func TestVerify_RevisionDoesNotShareARowWithARestatement(t *testing.T) {
 		t.Fatal("with the restatement already on the row, the revision keeps its own identity")
 	}
 }
+
+func withoutCriticalAndOffHunk(r Round) Round {
+	var kept []payload.Finding
+	for _, x := range r.Findings {
+		if x.Severity != "critical" && x.Line != 99 {
+			kept = append(kept, x)
+		}
+	}
+	r.Findings = kept
+	return r
+}
+
+func TestVerify_HeldPostedFindingNoLongerCountsTowardConfidence(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, withoutCriticalAndOffHunk(ledgerRoundOne()))
+
+	r2 := withM1(withoutCriticalAndOffHunk(ledgerRoundOne()), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyHold, true))
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	rep := publishRound(t, gh, ledger, r2)
+	if rep.Confidence != 5 {
+		t.Fatalf("confidence = %d, want 5 once the only medium is held", rep.Confidence)
+	}
+	if !rep.Decisions.Unbacked[m1ID] {
+		t.Fatalf("decisions do not name the held open finding: %+v", rep.Decisions)
+	}
+	if summary := gh.issueEdits[501]; !strings.Contains(summary, "**"+unbackedMarker+"** Medium thing") {
+		t.Fatalf("the held open finding is listed without its marker:\n%s", summary)
+	}
+}
+
+func TestVerify_LegacyLedgerLeavesARefutedOpenRootOutOfConfidence(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	legacyRound(t, gh, ledger, withoutCriticalAndOffHunk(roundOne()))
+	r2 := withoutCriticalAndOffHunk(roundOne())
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == "m1" {
+			r2.Findings[i] = verified(r2.Findings[i], types.VerifyDrop, true)
+		}
+	}
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	rep := legacyRound(t, gh, ledger, r2)
+	if rep.Confidence != 5 {
+		t.Fatalf("confidence = %d, want 5 once the only medium is refuted", rep.Confidence)
+	}
+	if !strings.Contains(gh.issueEdits[501], "**"+unbackedMarker+"** Medium thing") {
+		t.Fatalf("the refuted open root is listed without its marker:\n%s", gh.issueEdits[501])
+	}
+}

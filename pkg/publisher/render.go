@@ -130,6 +130,10 @@ type Round struct {
 	// held are the findings the output hygiene gate removed from Findings
 	// this round; the counts treat them as present, never as shown.
 	held map[string]bool
+	// unbacked are findings that stay listed because their thread from an
+	// earlier round is still open, though this round holds or refutes them;
+	// the merge confidence leaves them out and their bullet says so.
+	unbacked map[string]bool
 }
 
 // PriorComment is one of PRism's own inline comments as GitHub lists it now,
@@ -300,7 +304,27 @@ func (r Round) findingLink(f payload.Finding) string {
 // bullet is one summary line: severity, the effect sentence, and a short
 // location linked to the inline comment or the file at the reviewed commit.
 func (r Round) bullet(f payload.Finding) string {
+	if r.unbacked[f.ID] {
+		return r.markedBullet(f, unbackedMarker)
+	}
 	return r.markedBullet(f, "")
+}
+
+// unbackedMarker flags a bullet the confidence no longer counts.
+const unbackedMarker = "Held this round, thread still open:"
+
+// backed drops the findings this round no longer stands behind.
+func (r Round) backed(findings []payload.Finding) []payload.Finding {
+	if len(r.unbacked) == 0 {
+		return findings
+	}
+	out := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !r.unbacked[f.ID] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // bulletWhereSep joins a bullet's text to its file link.

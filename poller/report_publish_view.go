@@ -14,8 +14,9 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// ReportHideWithheldEnv turns off leaving publisher-held findings out of the
-// HTML report ("false", "0", "off", "no"); on by default.
+// ReportHideWithheldEnv turns off separating publisher-held findings from
+// the posted ones in the HTML report ("false", "0", "off", "no"); on by
+// default.
 const ReportHideWithheldEnv = "REPORT_HIDE_WITHHELD"
 
 // ReportPublishDecisionsEnv re-renders the canonical report after publishing
@@ -40,9 +41,9 @@ func reportHideWithheld() bool {
 }
 
 // reportPublishView works out what the publisher will make of the review so
-// the report shows what GitHub shows: the findings it holds off the PR
-// (verifier hold or drop, low value, gate BAD, hygiene and claim holds) and
-// the merge confidence over the rest. Ledger dedupe and caps are not known
+// the report can tell what reaches GitHub from what does not: why it holds
+// each finding off the PR (verifier hold or drop, low value, gate BAD,
+// hygiene and claim holds) and the merge confidence over the rest. Ledger dedupe and caps are not known
 // before publishing and stay visible.
 func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishView {
 	if !reportHideWithheld() || result == nil {
@@ -50,12 +51,12 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 	}
 	pol := p.publishPolicy()
 	pl := payload.Build("", "", 0, "", result.Comments, result.Diff, result.FileContents)
-	held, inline, titles := map[string]bool{}, map[string]bool{}, map[string]string{}
+	held, inline, titles := map[string]string{}, map[string]bool{}, map[string]string{}
 	var posted []payload.Finding
 	for _, f := range pl.Findings {
 		titles[f.ID] = publisher.TitleOf(f)
-		if f.Active && publisher.HoldReason(f, pol) != "" {
-			held[f.ID] = true
+		if reason := publisher.HoldReason(f, pol); f.Active && reason != "" {
+			held[f.ID] = holdReasonText(reason, f.Verification)
 			continue
 		}
 		inline[f.ID] = publisher.Shown(f)
@@ -63,11 +64,41 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 	}
 	key := func(c types.LineComment) string { return payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody) }
 	return html.PublishView{
-		Withhold:   func(c types.LineComment) bool { return held[key(c)] },
+		Held:       func(c types.LineComment) string { return held[key(c)] },
 		Inline:     func(c types.LineComment) bool { return inline[key(c)] },
 		Title:      func(c types.LineComment) string { return titles[key(c)] },
 		Confidence: publisher.Confidence(posted, result.Checks.ChecksViolated > 0),
 	}
+}
+
+const heldDropped = "it was already raised or settled on the PR"
+
+// heldThreadOpen follows the reason when an earlier round's thread is still
+// open on GitHub, so the card does not read as absent from the PR.
+const heldThreadOpen = "; its thread from an earlier round is still open on the PR"
+
+// holdReasonText words a publisher hold reason for the report.
+func holdReasonText(reason string, v *types.Verification) string {
+	switch reason {
+	case publisher.HoldVerifierHold:
+		if v != nil && v.LowValue && v.Status != types.VerifyHold {
+			return "the verifier judged it true but not worth posting"
+		}
+		return "the verifier could not stand behind it as written"
+	case publisher.HoldVerifierDrop:
+		return "the verifier refuted it"
+	case publisher.HoldQualityGate:
+		return "the quality gate graded it BAD"
+	case publisher.HoldPraise:
+		return "it is praise with nothing to act on"
+	case publisher.HoldReasonless:
+		return "it gives no reason to change the code"
+	case publisher.HoldLibraryClaim:
+		return "it makes a claim about a library that was not checked"
+	case publisher.HoldRegressionClaim:
+		return "it claims a regression without citing where"
+	}
+	return "publishing rules kept it off the PR"
 }
 
 const (
@@ -80,7 +111,7 @@ const (
 // whether the run will post at all.
 func (p *Poller) reportPublishViewFor(job ReviewJob, result *service.ReviewResult) html.PublishView {
 	view := p.reportPublishView(result)
-	if view.Withhold == nil {
+	if view.Held == nil {
 		return view
 	}
 	switch {
@@ -125,9 +156,20 @@ func withPublishDecisions(view html.PublishView, rep *publisher.Report) html.Pub
 	}
 	d := rep.Decisions
 	key := func(c types.LineComment) string { return payload.Fingerprint(c.FilePath, c.LineNumber, c.CommentBody) }
-	before := view.Withhold
-	view.Withhold = func(c types.LineComment) bool {
-		return d.Dropped[key(c)] || before != nil && before(c)
+	before := view.Held
+	view.Held = func(c types.LineComment) string {
+		if before != nil {
+			if reason := before(c); reason != "" {
+				if d.Unbacked[key(c)] {
+					reason += heldThreadOpen
+				}
+				return reason
+			}
+		}
+		if d.Dropped[key(c)] {
+			return heldDropped
+		}
+		return ""
 	}
 	view.Inline = func(c types.LineComment) bool { return d.Inline[key(c)] }
 	if rep.Confidence > 0 {

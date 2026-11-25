@@ -87,7 +87,7 @@ func TestGenerateReport_LabelsFindingsByVerification(t *testing.T) {
 	}
 }
 
-func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
+func TestGenerateReport_MovesHeldFindingsOutOfTheDiffWhenTheRunPosts(t *testing.T) {
 	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
 	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", State: stateConfirmed,
 		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
@@ -98,18 +98,21 @@ func TestGenerateReport_LeavesWithheldFindingsOffThePage(t *testing.T) {
 	report, err := GenerateReportFrom(ReportInput{
 		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
 		Comments: []types.LineComment{summary, refuted, kept},
-		Publish:  PublishView{Withhold: func(c types.LineComment) bool { return c.Verification.Suppresses() }, Confidence: 4},
+		Publish:  PublishView{Held: heldWhenSuppressed, Confidence: 4},
 	})
 	require.NoError(t, err)
 
-	for _, leak := range []string{"leaks the session token", "REFUTED", "F1", "token leak", "CRITICAL", "sev-critical\"", "request changes"} {
-		assert.NotContains(t, report, leak)
+	page, held := report[:strings.Index(report, `id="held-back"`)], report[strings.Index(report, `id="held-back"`):]
+	for _, leak := range []string{"leaks the session token", "REFUTED", "F1", "token leak", "sev-critical\"", "request changes"} {
+		assert.NotContains(t, page, leak)
 	}
+	assert.Contains(t, held, "Handle leaks the session token.")
+	assert.Contains(t, held, "PRism held it back because the verifier refuted it.")
 	assert.Contains(t, report, "Unlike another finding, this is cosmetic.")
-	assert.Contains(t, report, `<div class="verdict-upshot">Posted 1 comment.</div>`)
+	assert.Contains(t, report, `<div class="verdict-upshot">Posted 1 comment. 1 finding held back, listed at the end of the page.</div>`)
 	assert.Contains(t, report, "Other is unused.")
 	assert.Contains(t, report, ">1 confirmed</span>")
-	assert.Contains(t, report, ">1 withheld</span>")
+	assert.Contains(t, report, ">1 held back</a>")
 	assert.Contains(t, report, `<div class="verdict-text">Merge confidence 4/5</div>`)
 	assert.NotContains(t, report, `class="fix-first"`)
 }
@@ -246,4 +249,87 @@ func TestVerifyMarkFor_SaysWhenTheGateLoweredTheSeverity(t *testing.T) {
 	shadow := verifyMarkFor(&types.Verification{Status: types.VerifySkipped, Gate: "OK", GateLoweredFrom: "MEDIUM"})
 	assert.Empty(t, shadow.VerifyReasons, "a grade that was only recorded lowered nothing")
 	assert.Empty(t, verifyMarkFor(&types.Verification{Status: types.VerifyKeep, Applied: true, Gate: "GOOD", GateApplied: true}).VerifyReasons)
+}
+
+func heldWhenSuppressed(c types.LineComment) string {
+	if c.Verification.Suppresses() {
+		return "the verifier refuted it"
+	}
+	return ""
+}
+
+func TestGenerateReport_KeepsHeldFindingsInTheDiffWhenNothingPosts(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	lowValue := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "LOW", State: stateConfirmed,
+		CommentBody:  "Handle ignores the 6.x claim attribute.",
+		Verification: &types.Verification{Status: types.VerifyKeep, Applied: true, LowValue: true, ValueReason: "Only matters after the upgrade."}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "approve",
+		Upshot: "Correct for 5.2.0; the 6.x detection is unproven.", PriorityIDs: []string{"F1"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{summary, lowValue},
+		Publish: PublishView{Held: func(c types.LineComment) string {
+			if c.ID == "F1" {
+				return "the verifier held it back"
+			}
+			return ""
+		}, Confidence: 5, NotPublished: "PRism does not post on this author's pull requests"},
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, report, "Not posted to the PR: PRism does not post on this author&#39;s pull requests. Findings marked HELD BACK would not have posted either; each says why.")
+	assert.Contains(t, report, `<div class="verdict-upshot">Correct for 5.2.0; the 6.x detection is unproven.</div>`)
+	assert.Contains(t, report, ">0 confirmed</span>")
+	assert.Contains(t, report, ">1 held back</a>")
+	assert.Contains(t, report, `<h3 id="held-back">Held back</h3>`)
+	assert.Contains(t, report, `<div class="comment-counter" id="finding-1">`)
+	assert.Contains(t, report, `<span class="status-pill status-held">HELD BACK</span>`)
+	assert.Contains(t, report, "PRism held this back because the verifier held it back.")
+	assert.Contains(t, report, "Not worth posting: Only matters after the upgrade.")
+	assert.Contains(t, report, "Handle ignores the 6.x claim attribute.")
+	assert.NotContains(t, report, `<details class="review-details held-back"`)
+}
+
+func TestGenerateReport_LeavesHeldFindingsOutOfFixFirst(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,4 @@\n package a\n+func Handle() {}\n+func Other() {}\n+func Third() {}\n"
+	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", State: stateConfirmed,
+		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	kept := types.LineComment{ID: "F2", FilePath: "a.go", LineNumber: 3, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Other drops the error.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	third := types.LineComment{ID: "F3", FilePath: "a.go", LineNumber: 4, Importance: "LOW", State: stateConfirmed,
+		CommentBody: "Third is unused.", Verification: &types.Verification{Status: types.VerifyKeep, Applied: true}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "approve",
+		Upshot: "Fine to merge.", PriorityIDs: []string{"F1", "F2"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{summary, refuted, kept, third},
+		Publish:  PublishView{Held: heldWhenSuppressed, Confidence: 5, NotPublished: "the pull request is a draft"},
+	})
+	require.NoError(t, err)
+
+	fixFirst := report[strings.Index(report, `class="fix-first"`):]
+	fixFirst = fixFirst[:strings.Index(fixFirst, "</ol>")]
+	assert.Contains(t, fixFirst, "Other drops the error")
+	assert.NotContains(t, fixFirst, "session token")
+}
+
+func TestGenerateReport_KeepsHeldFindingsInTheDiffWhenTheRunPostsNothingElse(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+func Handle() {}\n+func Other() {}\n"
+	refuted := types.LineComment{ID: "F1", FilePath: "a.go", LineNumber: 2, Importance: "MEDIUM", State: stateConfirmed,
+		CommentBody: "Handle leaks the session token.", Verification: &types.Verification{Status: types.VerifyDrop, Applied: true}}
+	summary := types.LineComment{FilePath: "SUMMARY", CommentBody: "s", Summary: &types.SummaryBlock{Verdict: "request_changes",
+		Upshot: "F1 blocks the merge.", PriorityIDs: []string{"F1"}}}
+	report, err := GenerateReportFrom(ReportInput{
+		Diff: diff, PRNumber: 7, PRTitle: "t", CommitSHA: "abcdef1", GeneratedAt: time.Unix(0, 0),
+		Comments: []types.LineComment{summary, refuted},
+		Publish:  PublishView{Held: heldWhenSuppressed, Inline: func(types.LineComment) bool { return false }, Confidence: 5},
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, report, `<div class="verdict-upshot">No comments posted on abcdef1. 1 finding held back, marked HELD BACK in the diff; each says why.</div>`)
+	assert.Contains(t, report, `<span class="status-pill status-held">HELD BACK</span>`)
+	assert.Contains(t, report, "PRism held this back because the verifier refuted it.")
+	assert.NotContains(t, report, "F1 blocks the merge.")
+	assert.NotContains(t, report, `class="fix-first"`)
+	assert.NotContains(t, report, `<details class="review-details held-back"`)
 }

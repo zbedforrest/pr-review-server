@@ -144,9 +144,9 @@ func rememberExternal(ctx context.Context, r *Round, rows map[string]*db.Publish
 // another reviewer raised first still counts: the score is a verdict on the
 // PR, not on who found the defect.
 func (r Round) confidence() int {
-	findings := r.Findings
+	findings := r.backed(r.Findings)
 	if len(r.ExternalMatches) > 0 {
-		findings = append(append([]payload.Finding(nil), r.Findings...), r.externalFindings()...)
+		findings = append(findings[:len(findings):len(findings)], r.externalFindings()...)
 	}
 	return Confidence(findings, r.RequiredCheckViolated)
 }

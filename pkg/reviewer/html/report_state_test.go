@@ -315,8 +315,10 @@ func publishedStateFixture() ReportInput {
 	in.Comments = append(in.Comments, types.LineComment{ID: "A-7", FilePath: "secret.go", LineNumber: 2, Importance: "CRITICAL", Provenance: "agent", State: "confirmed",
 		CommentBody: "Token is logged in plain text."})
 	in.Publish = PublishView{
-		Withhold: func(c types.LineComment) bool { return c.ID == "A-7" },
-		Inline:   func(c types.LineComment) bool { return c.ID == "A-1" },
+		Held: func(c types.LineComment) string {
+			return map[string]string{"A-7": "the verifier refuted it"}[c.ID]
+		},
+		Inline: func(c types.LineComment) bool { return c.ID == "A-1" },
 		Title: func(c types.LineComment) string {
 			return map[string]string{"A-1": "Missing config crashes the handler"}[c.ID]
 		},
@@ -330,7 +332,7 @@ func TestGenerateReport_PublishedViewStatesWhatWasPosted(t *testing.T) {
 	block := report[strings.Index(report, `class="verdict-block"`):strings.Index(report, "<h2>Review Summary</h2>")]
 
 	assert.Contains(t, block, `<div class="verdict-text">Merge confidence 3/5</div>`)
-	assert.Contains(t, block, `<div class="verdict-upshot">Posted 1 inline comment and 5 summary notes.</div>`)
+	assert.Contains(t, block, `<div class="verdict-upshot">Posted 1 inline comment and 5 summary notes. 1 finding held back, listed at the end of the page.</div>`)
 	assert.NotContains(t, block, "real crash path")
 	assert.NotContains(t, block, "Reviewer")
 	assert.NotContains(t, block, "Fix first")
@@ -345,20 +347,28 @@ func TestGenerateReport_PublishedViewStatesWhatWasPosted(t *testing.T) {
 	assert.NotContains(t, index, "Nil dereference when the config is missing.")
 }
 
-func TestGenerateReport_PublishedViewNamesNoWithheldFinding(t *testing.T) {
+func TestGenerateReport_PublishedViewListsHeldFindingsAtTheEnd(t *testing.T) {
 	report := renderLayoutFixture(t, publishedStateFixture())
+	page, held := report[:strings.Index(report, `id="held-back"`)], report[strings.Index(report, `id="held-back"`):]
 	for _, leak := range []string{"A-7", "secret.go", "Token is logged", "A-2;"} {
-		assert.NotContains(t, report, leak)
+		assert.NotContains(t, page, leak)
 	}
-	assert.Contains(t, report, "Same root cause as <a href=\"#finding-8\" rel=\"nofollow\"><code>db.go:5</code></a>; see also another finding.")
-	assert.Contains(t, report, ">1 withheld</span>")
+	assert.Contains(t, page, "Same root cause as <a href=\"#finding-8\" rel=\"nofollow\"><code>db.go:5</code></a>; see also another finding.")
+	assert.Contains(t, page, `href="#held-back"`)
+	assert.Contains(t, page, ">1 held back</a>")
+	assert.Contains(t, page, "1 finding held back, listed at the end of the page.")
+
+	assert.Contains(t, held, "<summary>Held back (1)</summary>")
+	assert.Contains(t, held, "secret.go:2")
+	assert.Contains(t, held, "Token is logged in plain text.")
+	assert.Contains(t, held, "Not posted: PRism held it back because the verifier refuted it.")
 }
 
 func TestGenerateReport_SaysWhyNothingWasPosted(t *testing.T) {
 	in := publishedStateFixture()
 	in.Publish.NotPublished = "the pull request is a draft"
 	report := renderLayoutFixture(t, in)
-	assert.Contains(t, report, `<div class="verdict-upshot">Not posted to the PR: the pull request is a draft.</div>`)
+	assert.Contains(t, report, `<div class="verdict-upshot">Not posted to the PR: the pull request is a draft. Findings marked HELD BACK would not have posted either; each says why.</div>`)
 	assert.NotContains(t, report, "Most severe")
 	assert.NotContains(t, report, groupInline)
 
