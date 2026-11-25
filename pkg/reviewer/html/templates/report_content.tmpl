@@ -36,6 +36,8 @@
 <div class="verification-note verify-note-{{.VerifyClass}}"><span class="verification-note-label">{{.VerifyPill}}</span>{{range .VerifyReasons}}<div class="verification-reason">{{. | markdownInline}}</div>{{end}}</div>
 {{end}}{{end}}
 
+{{define "held-marker"}}<summary class="held-marker" title="{{.HeldReason}}"><span class="status-pill status-held">{{.FoldLabel}}</span></summary>{{end}}
+
 {{define "held-note"}}{{if .HeldReason}}
 <div class="held-note"><span class="held-note-label">Not posted</span> PRism held this back because {{.HeldReason}}.</div>
 {{end}}{{end}}
@@ -107,7 +109,7 @@
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
-            {{if .HeldCount}}<a class="count-pill count-withheld" href="#held-back" title="{{if .HeldInDiff}}Marked HELD BACK where they sit in the diff.{{else}}Listed at the end of the page.{{end}}">{{.HeldCount}} held back</a>{{end}}
+            {{if .HeldCount}}<a class="count-pill count-withheld" href="#held-back" title="{{if .HeldInDiff}}Folded where they sit in the diff.{{else}}Listed at the end of the page.{{end}}">{{.HeldCount}} held back</a>{{end}}
         </div>
         {{if .VerifyCounts}}
         <div class="verify-counts">
@@ -144,7 +146,8 @@
     <div class="findings-index">
         <h2>Findings</h2>
         {{range .FindingGroups}}
-        <h3{{if eq .Name "Held back"}} id="held-back"{{end}}>{{.Name}}</h3>
+        {{$held := eq .Name "Held back"}}
+        {{if $held}}<details class="held-index" id="held-back"><summary><span class="status-pill status-held">{{len .Rows}} held back</span></summary>{{else}}<h3>{{.Name}}</h3>{{end}}
         {{if .Hint}}<p class="group-hint">{{.Hint}}</p>{{end}}
         <ul class="findings-list">
             {{range .Rows}}
@@ -157,6 +160,7 @@
             </li>
             {{end}}
         </ul>
+        {{if $held}}</details>{{end}}
         {{end}}
     </div>
     {{end}}
@@ -165,6 +169,7 @@
     <div class="general-section">
         <h2>General Comments</h2>
         {{range .GeneralComments}}
+        {{if .Folded}}<details class="held-fold" id="{{.AnchorID}}">{{template "held-marker" .}}{{end}}
         <div class="general-comment">
             {{template "comment-counter" .}}
             <div class="general-body">
@@ -173,6 +178,7 @@
                 {{template "verification-note" .}}
             </div>
         </div>
+        {{if .Folded}}</details>{{end}}
         {{end}}
     </div>
     {{end}}
@@ -187,8 +193,10 @@
         <h2>Adjacent File-Specific Comments</h2>
         <p class="adjacent-explanation">These comments reference specific files and lines adjacent to but not explicitly in the original diff.</p>
         {{range .AdjacentComments}}
-        <div class="diff-file">
-            <div class="file-header">{{.FilePath}}:{{.LineNumber}}</div>
+        {{if .Folded}}<details class="diff-file held-fold" id="{{.AnchorID}}">
+            <summary class="file-header held-marker" title="{{.HeldReason}}">{{.FilePath}}:{{.LineNumber}} <span class="status-pill status-held">{{.FoldLabel}}</span></summary>
+        {{else}}<div class="diff-file">
+            <div class="file-header">{{.FilePath}}:{{.LineNumber}}</div>{{end}}
             <div class="diff-table">
                 {{if .ContextLines}}
                 {{range .ContextLines}}
@@ -211,7 +219,7 @@
                     </div>
                 </div>
             </div>
-        </div>
+        {{if .Folded}}</details>{{else}}</div>{{end}}
         {{end}}
     </div>
     {{end}}

@@ -1,3 +1,12 @@
+{{define "comment-card"}}{{if .Folded}}<details class="held-fold" id="{{.AnchorID}}">{{template "held-marker" .}}{{end}}
+                <div class="comment-body">
+                    {{template "comment-counter" .}}
+                    {{template "finding-body" .}}
+                    {{template "held-note" .}}
+                    {{template "verification-note" .}}
+                </div>
+{{if .Folded}}</details>{{end}}{{end}}
+
 {{define "diff-file"}}
 {{$filePath := .File.Path}}
 {{if .File.Skipped}}
@@ -18,16 +27,11 @@
              since deleted lines carry NewLineNumber 0. */}}
         {{$fileComments := index (index $.Root.Comments $filePath) 0}}
         {{if $fileComments}}
-        <div class="comment-row">
+        <div class="comment-row{{if allFolded $fileComments}} held-only{{end}}">
             <div class="line-num"></div><div class="line-num"></div>
             <div class="comment-cell">
                 {{range $fileComments}}
-                <div class="comment-body">
-                    {{template "comment-counter" .}}
-                    {{template "finding-body" .}}
-                    {{template "held-note" .}}
-                    {{template "verification-note" .}}
-                </div>
+                {{template "comment-card" .}}
                 {{end}}
             </div>
         </div>
@@ -47,16 +51,11 @@
         {{$comments := ""}}
         {{if ne .NewLineNumber 0}}{{$comments = index (index $.Root.Comments $filePath) .NewLineNumber}}{{end}}
         {{if $comments}}
-        <div class="comment-row">
+        <div class="comment-row{{if allFolded $comments}} held-only{{end}}">
             <div class="line-num"></div><div class="line-num"></div>
             <div class="comment-cell">
                 {{range $comments}}
-                <div class="comment-body">
-                    {{template "comment-counter" .}}
-                    {{template "finding-body" .}}
-                    {{template "held-note" .}}
-                    {{template "verification-note" .}}
-                </div>
+                {{template "comment-card" .}}
                 {{end}}
             </div>
         </div>

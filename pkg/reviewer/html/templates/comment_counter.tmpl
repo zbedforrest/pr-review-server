@@ -5,7 +5,7 @@
      no finding anchor). The finding anchor lives here, not on the comment container, because the load-time script
      overwrites the container's id. */}}
 {{define "comment-counter"}}
-<div class="comment-counter"{{if .AnchorID}} id="{{.AnchorID}}"{{end}}>
+<div class="comment-counter"{{if and .AnchorID (not .Folded)}} id="{{.AnchorID}}"{{end}}>
     {{if .ShowsSeverity}}<span class="sev-pill sev-{{.SeverityClass}}">{{if .SeverityLabel}}{{.SeverityLabel}}{{else}}NOTE{{end}}</span>{{end}}
     {{template "status-pill" .}}
     {{template "verify-pill" .}}

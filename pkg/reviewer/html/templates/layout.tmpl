@@ -133,6 +133,17 @@
         .status-unverified { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: var(--warn-text); }
         .status-held { background-color: rgba(139, 148, 158, 0.12); border: 1px dashed var(--muted); color: var(--muted); }
         .held-note { margin-top: 10px; padding: 8px 12px; border-left: 3px dashed var(--muted); font-size: 13px; color: var(--muted); }
+        .held-marker { cursor: pointer; list-style: none; font-size: 11px; color: var(--muted); }
+        .held-marker::-webkit-details-marker, .held-index > summary::-webkit-details-marker { display: none; }
+        .held-marker .status-pill::before, .held-index > summary .status-pill::before { content: "\22EF\00A0"; }
+        .comment-cell > details.held-fold:not([open]) { display: inline-block; margin-right: 6px; }
+        .comment-row.held-only > .comment-cell { padding: 2px 10px; }
+        details.held-fold[open] > .held-marker { margin-bottom: 4px; }
+        details.held-fold > .comment-body, details.held-fold > .general-comment { border-style: dashed; }
+        details.held-fold:target > summary { outline: 2px solid var(--border); outline-offset: 2px; border-radius: 4px; }
+        .held-index { margin-top: 12px; }
+        .held-index > summary { cursor: pointer; list-style: none; }
+        .held-index[open] > summary { margin-bottom: 10px; }
         .held-note-label { font-weight: 600; color: var(--strong); font-size: 11px; letter-spacing: 0.02em; margin-right: 6px; }
         a.count-pill { text-decoration: none; }
         .status-mechanical { background-color: rgba(139, 148, 158, 0.18); border: 1px solid var(--muted); color: var(--text); }
@@ -229,6 +240,7 @@
             .line-num { width: 28px; padding: 2px 4px; }
             .line-content { padding: 2px 6px; }
             .comment-cell { padding: 6px; }
+            .comment-row.held-only > .comment-cell { padding: 2px 6px; }
             .comment-body { padding: 10px; }
             .summary-section, .pr-description, .suggestions-section { padding: 10px 12px; }
             .finding-row, .next-action { flex-wrap: wrap; }
@@ -264,6 +276,14 @@
 
         let currentCommentIndex = -1;
         const anchorIndex = {};
+        const foldOf = (c) => c.closest('details.held-fold');
+        const isClosedFold = (c) => { const f = foldOf(c); return !!f && !f.open; };
+        const anchorOf = (c) => {
+            const counterDiv = c.querySelector('.comment-counter');
+            if (counterDiv && counterDiv.id) return counterDiv.id;
+            const fold = foldOf(c);
+            return fold ? fold.id : '';
+        };
 
         // Document order is the numbering the report shows and the identity the
         // #comment-N deep links use, so the id and the label are assigned in the
@@ -284,8 +304,9 @@
                 textEl.textContent = `Comment ${number} of ${totalComments}`;
             }
 
-            if (counterDiv.id) {
-                anchorIndex[counterDiv.id] = index;
+            const anchor = anchorOf(comment);
+            if (anchor) {
+                anchorIndex[anchor] = index;
             }
             const linkBtn = counterDiv.querySelector('.comment-link-btn');
             if (linkBtn) {
@@ -296,8 +317,7 @@
         // A finding is linked by the anchor the findings index uses; a card
         // without one (the summary) keeps its #comment-N link.
         function fragmentFor(index) {
-            const counterDiv = comments[index].querySelector('.comment-counter');
-            return (counterDiv && counterDiv.id) ? counterDiv.id : `comment-${index + 1}`;
+            return anchorOf(comments[index]) || `comment-${index + 1}`;
         }
 
         function commentLinkFor(fragment) {
@@ -373,7 +393,19 @@
             }
         }
 
+        function openHeldIndex(behavior) {
+            const group = document.getElementById('held-back');
+            if (!group) return;
+            if (group.tagName === 'DETAILS') group.open = true;
+            group.scrollIntoView({ behavior: behavior, block: 'start' });
+        }
+
         function focusCommentFromHash(behavior) {
+            if (location.hash === '#held-back') {
+                highlightComment(-1);
+                openHeldIndex(behavior);
+                return;
+            }
             const match = /^#comment-(\d+)$/.exec(location.hash);
             const anchored = anchorIndex[location.hash.slice(1)];
             if (!match && anchored === undefined) {
@@ -388,6 +420,8 @@
             highlightComment(index);
             // J/K picks up from the linked comment rather than the top.
             currentCommentIndex = index;
+            const fold = foldOf(comments[index]);
+            if (fold) fold.open = true;
             comments[index].scrollIntoView({ behavior: behavior, block: 'center' });
         }
 
@@ -395,21 +429,31 @@
         // already come up empty — do it here instead.
         focusCommentFromHash('auto');
         window.addEventListener('hashchange', () => focusCommentFromHash('smooth'));
+        // hashchange does not fire when the hash is already #held-back.
+        document.querySelectorAll('a.count-withheld').forEach((pill) => {
+            pill.addEventListener('click', () => {
+                if (location.hash === '#held-back') openHeldIndex('smooth');
+            });
+        });
 
         document.addEventListener('keydown', (e) => {
             const key = (e.key || '').toLowerCase();
             if (key === 'j' || key === 'k') {
                 e.preventDefault();
-                if (comments.length > 0) {
+                const n = comments.length;
+                let next = currentCommentIndex;
+                for (let step = 0; step < n; step++) {
                     if (key === 'j') {
-                        currentCommentIndex = (currentCommentIndex + 1) % comments.length;
+                        next = (next + 1) % n;
                     } else {
-                        currentCommentIndex = (currentCommentIndex === -1)
-                            ? comments.length - 1
-                            : (currentCommentIndex - 1 + comments.length) % comments.length;
+                        next = (next <= 0) ? n - 1 : next - 1;
                     }
-                    comments[currentCommentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    highlightComment(currentCommentIndex);
+                    if (!isClosedFold(comments[next])) {
+                        currentCommentIndex = next;
+                        comments[next].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        highlightComment(next);
+                        break;
+                    }
                 }
             }
         });
@@ -419,7 +463,7 @@
         let helpDismissed = false;
         try { helpDismissed = localStorage.getItem(helpDismissedKey) === '1'; } catch (e) { /* storage blocked: show the box */ }
         if (help) {
-            help.hidden = helpDismissed || comments.length === 0;
+            help.hidden = helpDismissed || !Array.from(comments).some((c) => !isClosedFold(c));
             help.querySelector('.help-tooltip-close').addEventListener('click', () => {
                 help.hidden = true;
                 try { localStorage.setItem(helpDismissedKey, '1'); } catch (e) { /* dismissed for this view only */ }

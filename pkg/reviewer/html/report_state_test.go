@@ -368,7 +368,7 @@ func TestGenerateReport_SaysWhyNothingWasPosted(t *testing.T) {
 	in := publishedStateFixture()
 	in.Publish.NotPublished = "the pull request is a draft"
 	report := renderLayoutFixture(t, in)
-	assert.Contains(t, report, `<div class="verdict-upshot">Not posted to the PR: the pull request is a draft. Findings marked HELD BACK would not have posted either; each says why.</div>`)
+	assert.Contains(t, report, `<div class="verdict-upshot">Not posted to the PR: the pull request is a draft. Held-back findings are folded where they sit in the diff; they would not have posted either.</div>`)
 	assert.NotContains(t, report, "Most severe")
 	assert.NotContains(t, report, groupInline)
 
