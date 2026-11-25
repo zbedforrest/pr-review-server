@@ -73,6 +73,10 @@ func (p *Poller) reportPublishView(result *service.ReviewResult) html.PublishVie
 
 const heldDropped = "it was already raised or settled on the PR"
 
+// heldThreadOpen follows the reason when an earlier round's thread is still
+// open on GitHub, so the card does not read as absent from the PR.
+const heldThreadOpen = "; its thread from an earlier round is still open on the PR"
+
 // holdReasonText words a publisher hold reason for the report.
 func holdReasonText(reason string, v *types.Verification) string {
 	switch reason {
@@ -156,6 +160,9 @@ func withPublishDecisions(view html.PublishView, rep *publisher.Report) html.Pub
 	view.Held = func(c types.LineComment) string {
 		if before != nil {
 			if reason := before(c); reason != "" {
+				if d.Unbacked[key(c)] {
+					reason += heldThreadOpen
+				}
 				return reason
 			}
 		}

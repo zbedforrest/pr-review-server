@@ -142,6 +142,8 @@ type Report struct {
 type Decisions struct {
 	Dropped map[string]bool
 	Inline  map[string]bool
+	// Unbacked are held or refuted findings whose earlier thread is still open.
+	Unbacked map[string]bool
 }
 
 const summaryFingerprint = "summary"
@@ -252,7 +254,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	d := r.diff()
 	r.transitions = &d
 	rep.InlinePosted, rep.Annotations, rep.StillOpen, rep.Fixed = len(sel.Inline), len(sel.Annotations), d.StillOpen, d.Fixed
-	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
+	rep.Confidence = Confidence(r.backed(r.Findings), r.RequiredCheckViolated)
 	now := p.now()
 
 	postedThisRound, err := p.postInline(ctx, r, sel, prior, now, &rep, nil)
@@ -560,6 +562,12 @@ func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id strin
 	for _, f := range r.Findings {
 		reason := HoldReason(f, p.Policy)
 		open := threadOpen != nil && threadOpen(f.ID)
+		if open && reason != "" {
+			if r.unbacked == nil {
+				r.unbacked = map[string]bool{}
+			}
+			r.unbacked[f.ID] = true
+		}
 		if open && reason == HoldVerifierDrop {
 			refuted[f.ID] = f
 			continue

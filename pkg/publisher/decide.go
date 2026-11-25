@@ -1161,7 +1161,7 @@ func findingIDs(findings []payload.Finding) []string {
 // arrived with: an id that survives neither as itself nor through an alias,
 // and was not held, reached no surface.
 func roundDecisions(handed []string, originalIDs map[string]string, r Round, held map[string]payload.Finding) *Decisions {
-	d := &Decisions{Dropped: map[string]bool{}, Inline: map[string]bool{}}
+	d := &Decisions{Dropped: map[string]bool{}, Inline: map[string]bool{}, Unbacked: map[string]bool{}}
 	surviving := map[string]bool{}
 	for _, f := range r.Findings {
 		id := f.ID
@@ -1169,6 +1169,9 @@ func roundDecisions(handed []string, originalIDs map[string]string, r Round, hel
 			id = from
 		}
 		surviving[id] = true
+		if r.unbacked[f.ID] {
+			d.Unbacked[id] = true
+		}
 		if cid := r.InlineComments[f.ID]; cid != 0 {
 			d.Inline[id] = true
 		}

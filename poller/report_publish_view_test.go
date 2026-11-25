@@ -87,6 +87,9 @@ func TestWithPublishDecisionsFollowsWhatTheRoundDid(t *testing.T) {
 	assert.Equal(t, 4, after.Confidence)
 
 	assert.Equal(t, 3, withPublishDecisions(before, &publisher.Report{}).Confidence)
+
+	rep.Decisions.Unbacked = map[string]bool{key(refuted): true}
+	assert.Equal(t, "the verifier refuted it"+heldThreadOpen, withPublishDecisions(before, rep).Held(refuted))
 }
 
 func TestReportPublishViewForSaysWhyTheRunWillNotPost(t *testing.T) {
